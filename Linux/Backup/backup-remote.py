@@ -2,7 +2,7 @@
 # 
 # Alan S. Alves
 # 03/24/2024
-# Toos Remote Backup
+# Tools Remote Backup
 # 
 # ##########################################################
 # ##########################################################
@@ -42,7 +42,7 @@ def backup_rsync(src, dst, user, host, port="ssh -p 22"):
 # Main exection
 # ##########################################################
 
-for   pasta in add_folders_bkp:
+for pasta in add_folders_bkp:
     backup_folder = (f"{src_dir}/{pasta}")
     print(f"\nFazendo backup de: {backup_folder}")
     backup_rsync(backup_folder, dst_dir, "alan", target, port_dst)
