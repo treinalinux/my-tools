@@ -10,7 +10,7 @@
 
 import argparse
 import sys
-from add_automount import add_nis_map_entry as add_entry
+from add_automount import control_add as add_entry
 from change_automount import change_nis_map_entry as change_entry
 from remove_automount import delete_nis_map_entry as remove_entry
 
@@ -102,7 +102,7 @@ remove   Remove entry from automount.
 
 def app_automount_add(sn_code, manager, name_entry, local, value_attribute):
     attr = "nisMapEntry"
-    add_entry(name_entry, local, attr, value_attribute)
+    add_entry(sn_code, manager, name_entry, local, attr, value_attribute)
 
 
 def app_automount_change(sn_code, name_entry, local, value_attribute):
