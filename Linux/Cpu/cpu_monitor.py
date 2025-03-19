@@ -2,6 +2,9 @@
 
 import os
 import time
+import datetime
+import random
+
 
 HIGH_CPU_LOAD_THRESHOLD = 70  # Limite para carga alta (em porcentagem)
 HIGH_LOAD_CPU_PERCENTAGE = 0.50  # 10% das CPUs com carga alta
@@ -148,6 +151,29 @@ def monitor_cpu_usage():
                 check_high_cpu_load(cpu_usage)
             previous_cpu_stats = current_cpu_stats
         time.sleep(1)
+
+
+def compliance_report():
+    """
+    Imprime um relatório de conformidade em horários aleatórios entre 6h e 6h59 ou 18h e 18h59.
+    """
+    now = datetime.datetime.now()
+    current_hour = now.hour
+
+    if current_hour == 6:
+        random_minute = random.randint(0, 59)
+        target_time = now.replace(minute=random_minute, second=0, microsecond=0)
+        remaining_time = (target_time - now).total_seconds()
+        if remaining_time > 0:
+            time.sleep(remaining_time)
+            print(f"Relatório de conformidade realizado às {datetime.datetime.now().strftime('%H:%M:%S')}")
+    elif current_hour == 18:
+        random_minute = random.randint(0, 59)
+        target_time = now.replace(minute=random_minute, second=0, microsecond=0)
+        remaining_time = (target_time - now).total_seconds()
+        if remaining_time > 0:
+            time.sleep(remaining_time)
+            print(f"Relatório de conformidade realizado às {datetime.datetime.now().strftime('%H:%M:%S')}")
 
 
 if __name__ == "__main__":
