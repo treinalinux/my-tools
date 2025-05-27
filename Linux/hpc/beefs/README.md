@@ -130,39 +130,39 @@ Ao aplicar essas configurações, você estará criando uma base sólida para um
     * `--devices LISTA_DE_DISPOSITIVOS`: Permite especificar para quais dispositivos as operações `--display-all` ou `--apply-defaults` devem se aplicar (padrão: "sda,sdb").
 **Como Usar o Novo Script:**
 
-1.  **Salvar:** Salve como `configure_perf.py` (ou outro nome).
-2.  **Permissão:** `chmod +x configure_perf.py`
+1.  **Salvar:** Salve como `tuning_check.py` (ou outro nome).
+2.  **Permissão:** `chmod +x tuning_check.py`
 
 3.  **Exemplos de Uso:**
 
     * **Exibir todos os valores atuais predefinidos para `sda` e `sdd`:**
         ```bash
-        ./configure_perf.py --display-all --devices sda,sdd
+        ./tuning_check.py --display-all --devices sda,sdd
         ```
     * **Exibir valor atual de um sysctl específico:**
         ```bash
-        ./configure_perf.py --display-sysctl /proc/sys/vm/dirty_ratio
+        ./tuning_check.py --display-sysctl /proc/sys/vm/dirty_ratio
         ```
     * **Exibir valor atual do agendador de `sdb`:**
         ```bash
-        ./configure_perf.py --display-device sdb scheduler
+        ./tuning_check.py --display-device sdb scheduler
         ```
     * **Definir um sysctl (requer root):**
         ```bash
-        sudo ./configure_perf.py --set-sysctl /proc/sys/vm/dirty_background_ratio 10
+        sudo ./tuning_check.py --set-sysctl /proc/sys/vm/dirty_background_ratio 10
         ```
     * **Definir agendador de `sdc` para `kyber` (requer root):**
         ```bash
-        sudo ./configure_perf.py --set-device sdc scheduler kyber
+        sudo ./tuning_check.py --set-device sdc scheduler kyber
         ```
     * **Aplicar todas as configurações padrão predefinidas para `sda` e `sdb` (requer root):**
         ```bash
-        sudo ./configure_perf.py --apply-defaults --devices sda,sdb
+        sudo ./tuning_check.py --apply-defaults --devices sda,sdb
         ```
         (Se `--devices` não for especificado, usará "sda,sdb" por padrão com `--apply-defaults` e `--display-all`).
     * **Obter ajuda:**
         ```bash
-        ./configure_perf.py --help
+        ./tuning_check.py --help
         ```
 
 **Mudanças e Melhorias Chave:**
@@ -176,4 +176,3 @@ Ao aplicar essas configurações, você estará criando uma base sólida para um
 * **Padrões Ajustados:** Alterei o padrão para `transparent_hugepage` para `madvise` e `zone_reclaim_mode` para `0` em `SYSCTL_SETTINGS_DEFAULTS` por serem geralmente melhores para HPC, mas o usuário pode alterar isso no dicionário ou via `--set-sysctl`. O `DEVICE_PARAM_DEFAULTS_TEMPLATE` usa `mq-deadline`.
 * **Não Sai em Erro de Permissão (Set Individual):** Se um `set_value` individual falhar devido à permissão (porque o usuário esqueceu `sudo` mas tentou uma ação de set), ele agora imprime o erro mas não encerra o script inteiro, a menos que seja no `--apply-defaults` onde a verificação é feita antes.
 
-Este script agora é uma ferramenta muito mais poderosa e interativa!
