@@ -40,9 +40,11 @@ GOLDEN_STANDARD = {
     "scheduler": "mq-deadline"
 }
 
+
 def print_header(text):
     """Imprime um cabeçalho formatado."""
     print(f"\n{TermColors.HEADER}--- {text} ---{TermColors.RESET}")
+
 
 def check_result(description, current_value, expected_value, is_ok):
     """Formata e imprime o resultado de uma checagem."""
@@ -50,6 +52,7 @@ def check_result(description, current_value, expected_value, is_ok):
         print(f"  [ {TermColors.OK}OK{TermColors.RESET} ] {description}: {TermColors.OK}{current_value}{TermColors.RESET}")
     else:
         print(f"  [ {TermColors.PROBLEM}FALHA{TermColors.RESET} ] {description}: {TermColors.PROBLEM}{current_value}{TermColors.RESET} (Esperado: '{expected_value}')")
+
 
 def run_command(command_string):
     """Executa um comando no shell usando os.popen e retorna o resultado."""
@@ -62,6 +65,7 @@ def run_command(command_string):
     except Exception as e:
         print(f"  [ {TermColors.PROBLEM}ERRO{TermColors.RESET} ] Falha ao executar o comando: '{command_string}'. Erro: {e}")
         return None
+
 
 def check_global_kernel_settings():
     """Verifica parâmetros globais do kernel."""
@@ -135,6 +139,7 @@ def check_volumes():
                  if match:
                      current_scheduler = match.group(1)
                      check_result("Agendador de I/O", current_scheduler, GOLDEN_STANDARD["scheduler"], current_scheduler == GOLDEN_STANDARD["scheduler"])
+
 
 if __name__ == "__main__":
     print(f"{TermColors.BOLD}====================================================={TermColors.RESET}")
