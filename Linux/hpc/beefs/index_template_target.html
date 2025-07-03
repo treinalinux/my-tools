@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="pt-br" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Template de Monitoramento de Host</title>
+    <style>
+        /* FONTES E CONFIGURAÇÕES GLOBAIS */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        :root {
+            --bg-color: #0d1117;
+            --card-color: rgba(22, 27, 34, 0.8);
+            --border-color: rgba(48, 54, 61, 0.8);
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-color: #58a6ff;
+            --accent-glow: rgba(88, 166, 255, 0.3);
+            --ok-color: #3fb950;
+            --warning-color: #d29922;
+            --critical-color: #f85149;
+            --progress-bg: rgba(255, 255, 255, 0.08);
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 40px;
+        }
+
+        /* O CARD DO SERVIDOR - O SEU "MOLDE" */
+        .server-card {
+            width: 100%;
+            max-width: 850px;
+            background-color: var(--card-color);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 2rem;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            display: grid;
+            grid-template-columns: 250px 1fr; /* Coluna fixa para o gauge, coluna flexível para os targets */
+            gap: 2rem;
+            box-shadow: 0 0 40px rgba(0,0,0,0.3);
+        }
+        
+        @media (max-width: 800px) {
+            .server-card {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .host-overview {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            border-right: 1px solid var(--border-color);
+            padding-right: 2rem;
+        }
+        @media (max-width: 800px) {
+            .host-overview {
+                border-right: none;
+                padding-right: 0;
+                border-bottom: 1px solid var(--border-color);
+                padding-bottom: 2rem;
+            }
+        }
+
+        .host-overview h2 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.75rem;
+            color: #fff;
+        }
+        
+        .host-overview .status {
+            font-size: 0.9rem;
+            font-weight: 500;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            margin-bottom: 1.5rem;
+        }
+        .status.ok { background-color: rgba(63, 185, 80, 0.2); color: var(--ok-color); }
+        .status.warning { background-color: rgba(210, 153, 34, 0.2); color: var(--warning-color); }
+        .status.critical { background-color: rgba(248, 81, 73, 0.2); color: var(--critical-color); }
+
+        /* GAUGE CIRCULAR (HUD STYLE) */
+        .gauge-hud {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            background: conic-gradient(
+                var(--accent-color) calc(var(--usage-percent, 0) * 1%),
+                var(--progress-bg) 0
+            );
+            position: relative;
+            animation: gauge-load 1s ease-out;
+        }
+
+        .gauge-hud::before {
+            content: '';
+            position: absolute;
+            height: 85%;
+            width: 85%;
+            background: var(--card-color);
+            border-radius: 50%;
+        }
+
+        .gauge-value {
+            position: relative;
+            font-size: 2.75rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        .gauge-value::after {
+            content: '%';
+            font-size: 1.25rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-left: 0.2rem;
+        }
+        
+        .general-stats {
+            margin-top: 1.5rem;
+            width: 100%;
+        }
+        .general-stats p {
+            display: flex;
+            justify-content: space-between;
+            margin: 0.5rem 0;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        .general-stats p span:last-child {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        /* LISTA DE TARGETS */
+        .targets-list {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .targets-list h3 {
+            margin: 0 0 1rem 0;
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .target-item {
+            display: grid;
+            grid-template-columns: 100px 80px 1fr;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem;
+            border-radius: 6px;
+            transition: background-color 0.2s ease;
+        }
+        .target-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        
+        .target-name { font-weight: 500; }
+        
+        .sparkline {
+            display: flex; align-items: flex-end; gap: 2px;
+            height: 24px;
+        }
+        .sparkline-bar {
+            flex-grow: 1; background-color: var(--text-secondary);
+            height: var(--h, 0%); border-radius: 1px;
+            transition: height 0.5s ease-out;
+            animation: spark-load 0.5s ease-out;
+        }
+
+        .progress-bar {
+            background-color: var(--progress-bg);
+            border-radius: 20px; height: 8px;
+        }
+        .progress-fill {
+            height: 100%; border-radius: 20px;
+            width: calc(var(--p, 0) * 1%);
+            transition: width 1s ease-out;
+            animation: progress-load 1s ease-out;
+        }
+
+        @keyframes gauge-load { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        @keyframes progress-load { from { width: 0; } }
+        @keyframes spark-load { from { height: 0; } }
+
+    </style>
+</head>
+<body>
+
+    <article class="server-card">
+
+        <div class="host-overview">
+            <h2>beegfs-srv-01</h2>
+            <div class="status warning">EM ALERTA</div>
+
+            <div class="gauge-hud" style="--usage-percent: 82;">
+                <div class="gauge-value">82</div>
+            </div>
+
+            <div class="general-stats">
+                <p><span>Total Usado:</span> <span>41.00 TB</span></p>
+                <p><span>Total Livre:</span> <span>9.00 TB</span></p>
+                <p><span>Capacidade:</span> <span>50.00 TB</span></p>
+            </div>
+        </div>
+
+        <div class="targets-list">
+            <h3>Desempenho por Partição</h3>
+
+            <div class="target-item">
+                <span class="target-name">Partição A</span>
+                <div class="sparkline" title="Histórico: 60%, 65%, 70%, 80%, 85%">
+                    <span class="sparkline-bar" style="--h: 60%;"></span>
+                    <span class="sparkline-bar" style="--h: 65%;"></span>
+                    <span class="sparkline-bar" style="--h: 70%;"></span>
+                    <span class="sparkline-bar" style="--h: 80%;"></span>
+                    <span class="sparkline-bar" style="--h: 85%;"></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="--p: 85; background-color: var(--warning-color);"></div>
+                </div>
+            </div>
+            <div class="target-item">
+                <span class="target-name">Partição B</span>
+                <div class="sparkline" title="Histórico: 90%, 91%, 92%, 94%, 95%">
+                    <span class="sparkline-bar" style="--h: 90%;"></span>
+                    <span class="sparkline-bar" style="--h: 91%;"></span>
+                    <span class="sparkline-bar" style="--h: 92%;"></span>
+                    <span class="sparkline-bar" style="--h: 94%;"></span>
+                    <span class="sparkline-bar" style="--h: 95%;"></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="--p: 95; background-color: var(--critical-color);"></div>
+                </div>
+            </div>
+
+            <div class="target-item">
+                <span class="target-name">Partição C</span>
+                <div class="sparkline" title="Histórico: 20%, 35%, 40%, 55%, 65%">
+                    <span class="sparkline-bar" style="--h: 20%;"></span>
+                    <span class="sparkline-bar" style="--h: 35%;"></span>
+                    <span class="sparkline-bar" style="--h: 40%;"></span>
+                    <span class="sparkline-bar" style="--h: 55%;"></span>
+                    <span class="sparkline-bar" style="--h: 65%;"></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="--p: 65; background-color: var(--ok-color);"></div>
+                </div>
+            </div>
+
+        </div>
+
+    </article>
+
+</body>
+</html>
