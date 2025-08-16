@@ -7,7 +7,7 @@ import os
 # Ferramentas para trabalhar com espaço em disco
 # 
 
-# --- Função Base (necessária para os cálculos) ---
+# --- Função Base (essencial para os cálculos) ---
 
 def get_disk_space(path):
     """
@@ -21,9 +21,9 @@ def get_disk_space(path):
                Retorna (None, None, None) se o caminho não existir.
     """
     try:
-        # Resolve o caminho para obter o ponto de montagem real
         real_path = os.path.realpath(path)
         if not os.path.exists(real_path):
+            # Usamos print para avisos, mas em uma aplicação maior, um log seria melhor.
             print(f"Aviso: O caminho '{path}' não existe.")
             return (None, None, None)
     except OSError as e:
@@ -34,69 +34,87 @@ def get_disk_space(path):
     return (total, used, free)
 
 
-# --- Nova Função Reutilizável para Calcular Porcentagens ---
+# --- Nova Função Reutilizável e Flexível ---
 
-def get_disk_usage_percentages(path):
+def get_disk_percentage(path, metric='used'):
     """
-    Calcula e retorna a porcentagem de espaço em disco usado e disponível.
+    Calcula uma porcentagem específica (de uso ou disponível) para o disco.
 
     Args:
         path (str): O caminho do sistema de arquivos a ser verificado.
+        metric (str, optional): A métrica desejada. Aceita 'used' (em uso) ou 'free' (disponível).
+                                O padrão é 'used'. O valor não diferencia maiúsculas/minúsculas.
 
     Returns:
-        tuple: Uma tupla contendo (percentual_usado, percentual_disponivel).
-               Retorna (None, None) se o caminho for inválido ou o espaço total for zero.
+        float: A porcentagem solicitada, como um número de ponto flutuante (ex: 75.4).
+               Retorna None se a métrica for inválida ou se não for possível ler o disco.
     """
     total, used, free = get_disk_space(path)
 
-    # Verifica se os dados são válidos e se o total é maior que zero para evitar divisão por zero
+    # Validação para evitar erros de cálculo
     if total is None or total == 0:
-        return (None, None)
+        return None
 
-    # Calcula as porcentagens
-    percentage_used = (used / total) * 100
-    percentage_free = (free / total) * 100
+    # Normaliza o argumento da métrica para minúsculas para torná-lo flexível
+    metric_lower = metric.lower()
 
-    return (percentage_used, percentage_free)
-
-
-# --- Função Auxiliar para Exibir as Porcentagens ---
-
-def show_disk_usage_percentages(path):
-    """
-    Exibe a porcentagem de espaço em disco usado e disponível para um caminho.
-
-    Args:
-        path (str): O caminho do sistema de arquivos a ser verificado.
-    """
-    percentage_used, percentage_free = get_disk_usage_percentages(path)
-
-    if percentage_used is not None:
-        print(f"Análise Percentual para o ponto de montagem de: '{path}'")
-        print(f"  - Percentual de Uso: {percentage_used:.2f}%")
-        print(f"  - Percentual Disponível: {percentage_free:.2f}%")
+    if metric_lower == 'used':
+        return (used / total) * 100
+    elif metric_lower == 'free':
+        return (free / total) * 100
     else:
-        # A função get_disk_space já emite um aviso, então esta parte é opcional
-        print(f"Não foi possível calcular as porcentagens para '{path}'.")
+        print(f"Erro: Métrica '{metric}' inválida. Use 'used' ou 'free'.")
+        return None
 
 
-# --- Exemplo de Uso ---
+# --- Exemplo de Uso Prático da Nova Função ---
 if __name__ == "__main__":
-    
-    print("--- Exemplo 1: Verificando as porcentagens do diretório raiz ('/') ---")
-    show_disk_usage_percentages('/')
-    
-    print("\n" + "="*50 + "\n")
-    
-    # ---
-    
-    home_path = os.path.expanduser("~")
-    print(f"--- Exemplo 2: Verificando as porcentagens do diretório home ('{home_path}') ---")
-    show_disk_usage_percentages(home_path)
 
-    print("\n" + "="*50 + "\n")
+    path_to_check = '/' # Vamos verificar o diretório raiz
+    
+    print(f"--- Verificando informações para o caminho: '{path_to_check}' ---")
 
     # ---
+    # Cenário 1: Quero saber a porcentagem EM USO
+    print("\n1. Solicitando a porcentagem de USO:")
+    
+    # Chama a função pedindo a métrica 'used'
+    used_percentage = get_disk_percentage(path_to_check, metric='used')
+    
+    if used_percentage is not None:
+        # Formata a saída para o usuário final
+        print(f"   => A porcentagem de espaço em uso é: {used_percentage:.2f}%")
+    else:
+        print("   => Não foi possível obter a informação.")
 
-    print("--- Exemplo 3: Tentando verificar um caminho inválido ---")
-    show_disk_usage_percentages('/caminho/com/certeza/invalido')
+    # ---
+    # Cenário 2: Quero saber a porcentagem DISPONÍVEL
+    print("\n2. Solicitando a porcentagem DISPONÍVEL:")
+    
+    # Chama a função pedindo a métrica 'free'
+    free_percentage = get_disk_percentage(path_to_check, metric='free')
+
+    if free_percentage is not None:
+        print(f"   => A porcentagem de espaço disponível é: {free_percentage:.2f}%")
+    else:
+        print("   => Não foi possível obter a informação.")
+
+    # ---
+    # Cenário 3: Usando o valor padrão (que é 'used')
+    print("\n3. Solicitando sem especificar a métrica (padrão 'used'):")
+    
+    default_percentage = get_disk_percentage(path_to_check)
+    
+    if default_percentage is not None:
+        print(f"   => O resultado padrão (uso) é: {default_percentage:.2f}%")
+    else:
+        print("   => Não foi possível obter a informação.")
+        
+    # ---
+    # Cenário 4: Testando uma métrica inválida
+    print("\n4. Testando com uma métrica inválida:")
+    
+    invalid_metric = get_disk_percentage(path_to_check, metric='total') # 'total' não é uma opção válida
+    
+    if invalid_metric is None:
+        print("   => A função retornou 'None' como esperado para métricas inválidas.")
