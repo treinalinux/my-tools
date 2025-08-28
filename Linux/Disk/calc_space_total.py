@@ -15,6 +15,7 @@
 Verifica o espaço em disco de pontos de montagem filtrados por uma
 palavra-chave, gera um relatório em HTML (compatível com Outlook)
 incluindo o detalhamento da volumetria de cada ponto de montagem verificado.
+Esta versão trata nomes de pontos de montagem longos para não quebrar o layout.
 Usa 'os.popen' e não requer bibliotecas externas.
 """
 
@@ -40,6 +41,13 @@ def format_bytes(byte_size):
     p = math.pow(1024, i)
     s = round(byte_size / p, 2)
     return f"{s} {size_name[i]}"
+
+def formatar_ponto_de_montagem_html(path):
+    """
+    Insere quebras de linha opcionais (zero-width space) após cada '/'
+    para permitir que textos longos quebrem a linha corretamente no HTML do e-mail.
+    """
+    return path.replace('/', '/&#8203;')
 
 def get_disk_stats_by_keyword(keyword):
     """
@@ -67,20 +75,15 @@ def get_disk_stats_by_keyword(keyword):
                 
                 if keyword in mount_point:
                     try:
-                        # Dados individuais
                         mount_total = int(parts[1]) * 1024
                         mount_used = int(parts[2]) * 1024
-                        mount_free = int(parts[3]) * 1024
                         
-                        # Acumula os totais gerais
                         total_space += mount_total
                         total_used += mount_used
-                        total_free += mount_free
+                        total_free += int(parts[3]) * 1024
                         
-                        # Calcula a porcentagem individual
                         percent = (mount_used / mount_total) * 100 if mount_total > 0 else 0
                         
-                        # Adiciona à lista de detalhes
                         detailed_stats.append({
                             "mount": mount_point,
                             "total": mount_total,
@@ -88,7 +91,7 @@ def get_disk_stats_by_keyword(keyword):
                             "percent": percent
                         })
                     except ValueError:
-                        print(f"Aviso: Não foi possível processar a linha para o ponto de montagem {mount_point}. Ignorando.")
+                        print(f"Aviso: Não foi possível processar a linha para {mount_point}. Ignorando.")
                         continue
 
     except Exception as e:
@@ -98,14 +101,12 @@ def get_disk_stats_by_keyword(keyword):
     if not detailed_stats:
         print(f"Nenhum ponto de montagem encontrado com a palavra-chave: '{keyword}'")
 
-    # Ordena a lista de detalhes pelo nome do ponto de montagem
     detailed_stats.sort(key=lambda x: x['mount'])
-    
     return total_space, total_used, total_free, detailed_stats
 
 def gerar_saida_html_para_outlook(keyword, total, used, free, percent_used, mount_details):
     """
-    Gera um arquivo HTML compatível com Outlook, agora com uma tabela
+    Gera um arquivo HTML compatível com Outlook, com uma tabela
     detalhando a volumetria de cada ponto de montagem.
     """
     total_str = format_bytes(total)
@@ -129,9 +130,9 @@ def gerar_saida_html_para_outlook(keyword, total, used, free, percent_used, moun
         except Exception:
             timestamp = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
     else:
-        timestamp = datetime.now().strftime("%d/%m/%Y às %H:%M:%S (%Z)")
+        # Usando a data/hora atual do sistema com fuso horário local
+        timestamp = datetime.now().astimezone().strftime("%d/%m/%Y às %H:%M:%S (%Z)")
 
-    # Geração da tabela de detalhes
     details_rows_html = ""
     for item in mount_details:
         item_percent_str = f"{item['percent']:.2f}%"
@@ -142,11 +143,14 @@ def gerar_saida_html_para_outlook(keyword, total, used, free, percent_used, moun
             progress_color_item = "#ffc107"
         else:
             progress_color_item = "#dc3545"
+        
+        # USA A NOVA FUNÇÃO AQUI para garantir a quebra de linha
+        formatted_mount = formatar_ponto_de_montagem_html(item['mount'])
 
         details_rows_html += f"""
         <tr>
             <td style="padding: 10px 5px; border-bottom: 1px solid #eeeeee; font-family: 'Courier New', Courier, monospace; font-size: 14px; color: #333;">
-                {item['mount']}
+                {formatted_mount}
             </td>
             <td style="padding: 10px 5px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #333; text-align: right;">
                 {format_bytes(item['used'])} / {format_bytes(item['total'])}
@@ -246,7 +250,12 @@ if __name__ == "__main__":
         print("\n--- Detalhamento por Ponto de Montagem ---")
         if details:
             for item in details:
-                print(f"- {item['mount']:<30} | {format_bytes(item['used']):>10} / {format_bytes(item['total']):<10} ({item['percent']:>6.2f}%)")
+                # Trunca nomes longos para exibição no terminal
+                mount_name = item['mount']
+                if len(mount_name) > 45:
+                    mount_name = mount_name[:20] + '...' + mount_name[-20:]
+                
+                print(f"- {mount_name:<45} | {format_bytes(item['used']):>10} / {format_bytes(item['total']):<10} ({item['percent']:>6.2f}%)")
         else:
             print("Nenhum.")
         
