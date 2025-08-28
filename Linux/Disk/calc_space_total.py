@@ -15,7 +15,8 @@
 Verifica o espaço em disco de pontos de montagem filtrados por uma
 palavra-chave, gera um relatório em HTML (compatível com Outlook)
 incluindo o detalhamento da volumetria de cada ponto de montagem verificado.
-Esta versão trata nomes de pontos de montagem longos para não quebrar o layout.
+Esta versão trata nomes de pontos de montagem longos truncando-os para
+melhor visualização no HTML, oferecendo o nome completo em um tooltip.
 Usa 'os.popen' e não requer bibliotecas externas.
 """
 
@@ -42,12 +43,32 @@ def format_bytes(byte_size):
     s = round(byte_size / p, 2)
     return f"{s} {size_name[i]}"
 
-def formatar_ponto_de_montagem_html(path):
+def formatar_ponto_de_montagem_html(path, max_len=30, truncation_char='...'):
     """
-    Insere quebras de linha opcionais (zero-width space) após cada '/'
-    para permitir que textos longos quebrem a linha corretamente no HTML do e-mail.
+    Formata o caminho do ponto de montagem para exibição no HTML.
+    Trunca caminhos muito longos e adiciona o nome completo como 'title' (tooltip).
+    Adiciona zero-width spaces para permitir quebras de linha em partes da URL.
     """
-    return path.replace('/', '/&#8203;')
+    original_path = path
+    
+    # Adiciona zero-width spaces para quebras de linha opcionais
+    path_with_zwsp = path.replace('/', '/&#8203;')
+
+    if len(original_path) <= max_len:
+        # Se já é curto, não trunca, mas ainda usa ZWSP para segurança
+        return f'<span title="{original_path}">{path_with_zwsp}</span>'
+    else:
+        # Trunca o caminho: mantém início e fim
+        start_len = (max_len - len(truncation_char)) // 2
+        end_len = max_len - len(truncation_char) - start_len
+        
+        truncated_path = original_path[:start_len] + truncation_char + original_path[-end_len:]
+        
+        # Também adicionamos ZWSP ao caminho truncado para caso o truncamento ainda deixe uma "palavra" longa
+        truncated_path_with_zwsp = truncated_path.replace('/', '/&#8203;')
+        
+        return f'<span title="{original_path}">{truncated_path_with_zwsp}</span>'
+
 
 def get_disk_stats_by_keyword(keyword):
     """
@@ -130,7 +151,6 @@ def gerar_saida_html_para_outlook(keyword, total, used, free, percent_used, moun
         except Exception:
             timestamp = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
     else:
-        # Usando a data/hora atual do sistema com fuso horário local
         timestamp = datetime.now().astimezone().strftime("%d/%m/%Y às %H:%M:%S (%Z)")
 
     details_rows_html = ""
@@ -144,13 +164,13 @@ def gerar_saida_html_para_outlook(keyword, total, used, free, percent_used, moun
         else:
             progress_color_item = "#dc3545"
         
-        # USA A NOVA FUNÇÃO AQUI para garantir a quebra de linha
-        formatted_mount = formatar_ponto_de_montagem_html(item['mount'])
+        # AQUI USAMOS A FUNÇÃO DE FORMATAÇÃO
+        formatted_mount_for_display = formatar_ponto_de_montagem_html(item['mount'])
 
         details_rows_html += f"""
         <tr>
             <td style="padding: 10px 5px; border-bottom: 1px solid #eeeeee; font-family: 'Courier New', Courier, monospace; font-size: 14px; color: #333;">
-                {formatted_mount}
+                {formatted_mount_for_display}
             </td>
             <td style="padding: 10px 5px; border-bottom: 1px solid #eeeeee; font-size: 14px; color: #333; text-align: right;">
                 {format_bytes(item['used'])} / {format_bytes(item['total'])}
@@ -250,12 +270,8 @@ if __name__ == "__main__":
         print("\n--- Detalhamento por Ponto de Montagem ---")
         if details:
             for item in details:
-                # Trunca nomes longos para exibição no terminal
-                mount_name = item['mount']
-                if len(mount_name) > 45:
-                    mount_name = mount_name[:20] + '...' + mount_name[-20:]
-                
-                print(f"- {mount_name:<45} | {format_bytes(item['used']):>10} / {format_bytes(item['total']):<10} ({item['percent']:>6.2f}%)")
+                # Exibindo o nome completo no terminal, pois não há restrição de largura
+                print(f"- {item['mount']:<60} | {format_bytes(item['used']):>10} / {format_bytes(item['total']):<10} ({item['percent']:>6.2f}%)")
         else:
             print("Nenhum.")
         
