@@ -4,9 +4,8 @@
 # name.........: compare_list
 # description..: Compare files csv and generate new file
 # author.......: Alan da Silva Alves
-# version......: 1.0.0
+# version......: 1.0.1
 # date.........: 8/3/2024
-
 #
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -27,17 +26,20 @@ def processar_arquivos_csv(base_path, completo_path):
     # Lista de colunas esperada no arquivo completo
     colunas_completas = ['numero_de_serie', 'modelo_equipamento', 'nome_do_host', 'ip', 'tipo_de_so']
     
-    # Conjunto para armazenar os números de série do arquivo base para uma busca eficiente
-    numeros_de_serie_base = set()
+    # Dicionário para armazenar os números de série e modelos do arquivo base
+    # Isso nos permite manter o modelo associado a cada número de série
+    dados_base = {}
     try:
         with open(base_path, 'r', newline='', encoding='utf-8') as f_base:
             reader_base = csv.reader(f_base)
             # Ignora o cabeçalho
             next(reader_base)
             for row in reader_base:
-                if row:
-                    numeros_de_serie_base.add(row[0].strip()) # Adiciona o numero de série
-        print(f"Total de {len(numeros_de_serie_base)} números de série lidos do arquivo base.")
+                if row and len(row) > 1:
+                    numero_serie = row[0].strip()
+                    modelo = row[1].strip()
+                    dados_base[numero_serie] = modelo
+        print(f"Total de {len(dados_base)} números de série lidos do arquivo base.")
     except FileNotFoundError:
         print(f"Erro: O arquivo base '{base_path}' não foi encontrado.")
         return
@@ -57,7 +59,7 @@ def processar_arquivos_csv(base_path, completo_path):
             # Ignora o cabeçalho
             next(reader_completo)
             for row in reader_completo:
-                if row and row[0].strip() in numeros_de_serie_base:
+                if row and row[0].strip() in dados_base:
                     linhas_encontradas.append(row)
                     numeros_de_serie_encontrados.add(row[0].strip())
         print(f"Total de {len(numeros_de_serie_encontrados)} números de série encontrados no arquivo completo.")
@@ -82,13 +84,14 @@ def processar_arquivos_csv(base_path, completo_path):
     
     # Escreve o arquivo de ativos faltando
     try:
-        numeros_de_serie_faltando = numeros_de_serie_base.difference(numeros_de_serie_encontrados)
+        numeros_de_serie_faltando = set(dados_base.keys()).difference(numeros_de_serie_encontrados)
         nome_faltando = 'ativos_faltando.csv'
         with open(nome_faltando, 'w', newline='', encoding='utf-8') as f_faltando:
             writer_faltando = csv.writer(f_faltando)
-            writer_faltando.writerow(['numero_de_serie_faltando'])
+            writer_faltando.writerow(['numero_de_serie', 'modelo_equipamento'])
             for numero in sorted(list(numeros_de_serie_faltando)):
-                writer_faltando.writerow([numero])
+                modelo = dados_base.get(numero, 'Modelo não informado')
+                writer_faltando.writerow([numero, modelo])
         print(f"Arquivo '{nome_faltando}' gerado com sucesso!")
         print(f"Total de {len(numeros_de_serie_faltando)} números de série faltando.")
     except Exception as e:
