@@ -4,12 +4,14 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.0
+# version......: 1.0.1
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+
+# -*- coding: utf-8 -*-
 
 import os
 import datetime
@@ -426,7 +428,7 @@ def check_disk_io():
     return results
 
 def check_beegfs_disk_usage():
-    """Verifica o uso de disco agregado de todas as partições BeeGFS."""
+    """Verifica o uso de disco individual e agregado de todas as partições BeeGFS."""
     beegfs_mounts = find_beegfs_mounts()
 
     if not beegfs_mounts:
@@ -435,6 +437,7 @@ def check_beegfs_disk_usage():
 
     total_size_kb = 0
     total_used_kb = 0
+    results = []
 
     for mount in beegfs_mounts:
         # Usamos -k para obter valores consistentes em Kilobytes
@@ -448,20 +451,45 @@ def check_beegfs_disk_usage():
             line = output.splitlines()[1]
             parts = line.split()
             # As colunas são: Filesystem, 1K-blocks, Used, Available, Use%
-            total_size_kb += int(parts[1])
-            total_used_kb += int(parts[2])
+            part_size_kb = int(parts[1])
+            part_used_kb = int(parts[2])
+            part_available_kb = int(parts[3])
+            part_usage_percent = float(parts[4].replace('%', ''))
+            
+            total_size_kb += part_size_kb
+            total_used_kb += part_used_kb
+
+            # Relatório individual por partição
+            part_status = 'NORMAL'
+            if part_usage_percent >= BEEGFS_USAGE_THRESHOLD_WARN:
+                part_status = 'ATENÇÃO'
+            
+            part_details = (f"Uso: {part_usage_percent:.1f}%. "
+                            f"Total: {format_bytes(part_size_kb)}, "
+                            f"Usado: {format_bytes(part_used_kb)}, "
+                            f"Disponível: {format_bytes(part_available_kb)}.")
+
+            results.append({
+                'category': 'Uso de Disco BeeGFS',
+                'item': f'Uso da Partição {mount}',
+                'status': part_status,
+                'details': part_details
+            })
+
         except (IndexError, ValueError):
             # Ignora linhas mal formatadas ou erros de conversão
             continue
 
     if total_size_kb == 0:
-        return [{
+        results.append({
             'category': 'Uso de Disco BeeGFS',
             'item': 'Uso Agregado das Partições',
             'status': 'FALHA',
             'details': 'Não foi possível obter informações de uso de nenhuma partição BeeGFS.'
-        }]
+        })
+        return results
 
+    # Relatório agregado
     usage_percent = (total_used_kb / total_size_kb) * 100.0
     total_available_kb = total_size_kb - total_used_kb
     
@@ -474,12 +502,14 @@ def check_beegfs_disk_usage():
                f"Usado: {format_bytes(total_used_kb)}, "
                f"Disponível: {format_bytes(total_available_kb)}.")
 
-    return [{
+    results.append({
         'category': 'Uso de Disco BeeGFS',
         'item': 'Uso Agregado das Partições',
         'status': status,
         'details': details
-    }]
+    })
+    
+    return results
 
 
 # --- FUNÇÕES DE SAÍDA (LOG E RELATÓRIO) ---
@@ -588,6 +618,8 @@ def generate_test_data():
         {'category': 'Serviços Essenciais', 'item': 'Serviço: mysql', 'status': 'FALHA', 'details': 'O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because the control process exited with error code.'},
         {'category': 'Performance de Disco (I/O)', 'item': 'Disco sda1 (/mnt/BeeGFS/meta)', 'status': 'NORMAL', 'details': 'Latência R/W: 5.2ms/8.1ms, Utilização: 25.4%.'},
         {'category': 'Performance de Disco (I/O)', 'item': 'Disco sdb1 (/mnt/BeeGFS/storage)', 'status': 'ATENÇÃO', 'details': 'Latência de escrita de 65.7ms excede o limite. Utilização de 95.1% excede o limite.'},
+        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso da Partição /BeeGFS/meta', 'status': 'NORMAL', 'details': 'Uso: 75.0%. Total: 2.0 TB, Usado: 1.5 TB, Disponível: 500.0 GB.'},
+        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso da Partição /BeeGFS/storage', 'status': 'ATENÇÃO', 'details': 'Uso: 96.3%. Total: 8.0 TB, Usado: 7.7 TB, Disponível: 250.0 GB.'},
         {'category': 'Uso de Disco BeeGFS', 'item': 'Uso Agregado das Partições', 'status': 'ATENÇÃO', 'details': 'Uso total: 92.5%. Total: 10.0 TB, Usado: 9.2 TB, Disponível: 750.0 GB.'}
     ]
 
@@ -650,4 +682,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
