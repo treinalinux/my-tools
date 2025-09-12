@@ -252,7 +252,7 @@ def check_services():
     return results
 
 def find_beegfs_mounts():
-    """Encontra dinamicamente os pontos de montagem do BeeGFS que começam com /mnt/BeeGFS."""
+    """Encontra dinamicamente os pontos de montagem que começam com /BeeGFS."""
     mounts = []
     # Usamos o comando 'mount' que é mais confiável para parsing
     output, code = run_command("mount")
@@ -260,12 +260,13 @@ def find_beegfs_mounts():
         return mounts # Retorna lista vazia se o comando falhar
 
     for line in output.splitlines():
-        # Exemplo de linha: /dev/sda1 on /mnt/BeeGFS/storage type xfs (...)
-        if ' on /mnt/BeeGFS' in line:
+        # Exemplo de linha: /dev/mapper/vg-storage on /BeeGFS/storage type xfs (...)
+        if ' on /BeeGFS' in line:
             try:
                 # Extrai o ponto de montagem
                 mount_point = line.split(' on ')[1].split(' type ')[0]
-                mounts.append(mount_point)
+                if mount_point.startswith('/BeeGFS'):
+                    mounts.append(mount_point)
             except IndexError:
                 # Linha mal formatada, ignora
                 continue
@@ -346,7 +347,16 @@ def check_disk_io():
             continue
         
         device_path = df_output.splitlines()[-1].split()[0]
-        device_name = os.path.basename(device_path)
+        
+        # Tenta obter o nome do kernel do dispositivo (ex: dm-0) que o iostat usa.
+        # Isso é crucial para dispositivos LVM ou /dev/mapper.
+        # O fallback é usar o nome base do caminho se lsblk falhar.
+        lsblk_output, lsblk_code = run_command(f"lsblk -no KNAME {device_path}")
+        if lsblk_code == 0 and lsblk_output:
+            device_name = lsblk_output.strip()
+        else:
+            device_name = os.path.basename(device_path)
+
 
         device_found_in_stats = False
         for line in device_data_lines:
