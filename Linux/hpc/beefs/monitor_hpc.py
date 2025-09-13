@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.5
+# version......: 1.3.6
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -491,6 +491,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
 
