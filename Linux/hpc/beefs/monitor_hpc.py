@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.2
+# version......: 1.0.3
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -326,28 +326,37 @@ def check_services():
         })
     return results
 
-def check_disk_health():
-    """Verifica a saúde dos discos físicos usando S.M.A.R.T., com lógica específica para SSDs."""
+def check_disk_health(disks_to_check):
+    """Verifica a saúde dos discos físicos fornecidos via linha de comando usando S.M.A.R.T."""
     _, code = run_command("smartctl -V")
-    if code != 0:
-        return []
-
-    output, code = run_command("ls /sys/block")
     if code != 0:
         return [{
             'category': 'Saúde dos Discos (S.M.A.R.T.)',
-            'item': 'Listagem de Discos',
+            'item': 'Ferramenta smartctl',
             'status': 'FALHA',
-            'priority': 'P2 (Alta)',
-            'details': f"Não foi possível listar os dispositivos de bloco. Saída: {output}"
+            'priority': 'P3 (Média)',
+            'details': 'A ferramenta smartctl não foi encontrada. A verificação S.M.A.R.T. foi ignorada.'
         }]
-    
-    results = []
-    disk_names = [d for d in output.splitlines() if not d.startswith(('loop', 'ram', 'sr'))]
 
-    for disk in disk_names:
-        device_path = f"/dev/{disk}"
-        smart_output, smart_code = run_command(f"LC_ALL=C smartctl -H {device_path}")
+    results = []
+    for disk_arg in disks_to_check:
+        device_path = disk_arg
+        device_type_arg = ""
+        if ':' in disk_arg:
+            try:
+                device_path, device_type = disk_arg.split(':', 1)
+                device_type_arg = f"-d {device_type}"
+            except ValueError:
+                results.append({
+                    'category': 'Saúde dos Discos (S.M.A.R.T.)',
+                    'item': f'Argumento Inválido ({disk_arg})',
+                    'status': 'FALHA',
+                    'priority': 'P3 (Média)',
+                    'details': 'O formato do argumento do disco está incorreto. Use "DISCO" ou "DISCO:TIPO".'
+                })
+                continue
+        
+        smart_output, smart_code = run_command(f"LC_ALL=C smartctl -H {device_type_arg} {device_path}")
 
         status = 'FALHA'
         priority = 'P2 (Alta)'
@@ -375,10 +384,17 @@ def check_disk_health():
             details = f"Erro ao executar smartctl para {device_path}. Verifique as permissões.\nSaída:\n{smart_output}"
 
         # Lógica adicional para SSDs
-        is_ssd_output, _ = run_command(f"cat /sys/block/{disk}/queue/rotational")
-        if is_ssd_output.strip() == '0' and status == 'NORMAL':
+        disk_name_for_ssd_check = os.path.basename(device_path)
+        ssd_check_path = f"/sys/block/{disk_name_for_ssd_check}/queue/rotational"
+        is_ssd = False
+        if os.path.exists(ssd_check_path):
+             is_ssd_output, _ = run_command(f"cat {ssd_check_path}")
+             if is_ssd_output.strip() == '0':
+                 is_ssd = True
+
+        if is_ssd and status == 'NORMAL':
             ssd_warnings = []
-            attr_output, _ = run_command(f"LC_ALL=C smartctl -A {device_path}")
+            attr_output, _ = run_command(f"LC_ALL=C smartctl -A {device_type_arg} {device_path}")
             
             for line in attr_output.splitlines():
                 try:
@@ -1074,15 +1090,37 @@ def generate_test_data():
         {'category': 'Uso de Disco BeeGFS', 'item': 'Uso Agregado das Partições', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Uso total: 92.5%. Total: 10.0 TB, Usado: 9.2 TB, Disponível: 750.0 GB.'}
     ]
 
+# --- NOVA FUNÇÃO AUXILIAR ---
+def parse_cli_args():
+    """Analisa os argumentos da linha de comando."""
+    args = {
+        'test_html': '--test-html' in sys.argv,
+        'force_html': '--force-html' in sys.argv,
+        'smart_disks': []
+    }
+    try:
+        if '--smart-disks' in sys.argv:
+            index = sys.argv.index('--smart-disks')
+            # Garante que o próximo argumento não é outra flag
+            if len(sys.argv) > index + 1 and not sys.argv[index + 1].startswith('--'):
+                disks_str = sys.argv[index + 1]
+                args['smart_disks'] = [d.strip() for d in disks_str.split(',') if d.strip()]
+            else:
+                print("AVISO: Argumento --smart-disks não foi seguido por uma lista de discos.")
+    except IndexError:
+        print("AVISO: Argumento --smart-disks requer uma lista de discos. Verificação S.M.A.R.T. ignorada.")
+    return args
+
 # --- FUNÇÃO PRINCIPAL ---
 
 def main():
     """Função principal que orquestra as verificações e a geração de saídas."""
     
     hostname, _ = run_command("hostname")
+    args = parse_cli_args()
     
     # Verifica se o modo de teste foi ativado
-    if '--test-html' in sys.argv:
+    if args['test_html']:
         print("Modo de teste: Gerando relatório HTML de exemplo...")
         setup_output_files() # Garante que o diretório de saída existe
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -1092,7 +1130,7 @@ def main():
         return # Finaliza a execução após gerar o teste
 
     # Verifica se a geração do relatório HTML deve ser forçada
-    force_html_generation = '--force-html' in sys.argv
+    force_html_generation = args['force_html']
 
     print("Iniciando verificação de monitoramento do cluster HPC...")
     setup_output_files()
@@ -1113,7 +1151,10 @@ def main():
 
     all_checks.extend(check_network_errors())
     all_checks.append(check_system_errors())
-    all_checks.extend(check_disk_health())
+    
+    if args['smart_disks']:
+        all_checks.extend(check_disk_health(args['smart_disks']))
+
     all_checks.append(check_zombie_processes())
     all_checks.append(check_uptime())
     all_checks.extend(check_services())
@@ -1142,5 +1183,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
