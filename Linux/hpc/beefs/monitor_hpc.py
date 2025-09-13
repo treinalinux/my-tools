@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.4
+# version......: 1.3.5
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -198,7 +198,8 @@ def check_infiniband():
             line = line.strip()
             if line.startswith('Port '):
                 current_port = line.split(':')[0]
-                if current_port not in port_details_map: port_details_map[current_port] = {}
+                if current_port not in port_details_map:
+                    port_details_map[current_port] = {}
             elif ':' in line and current_port:
                 key, value = line.split(':', 1)
                 port_details_map[current_port][key.strip()] = value.strip()
@@ -490,5 +491,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
