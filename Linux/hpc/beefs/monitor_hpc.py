@@ -11,8 +11,6 @@
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
-# -*- coding: utf-8 -*-
-
 import os
 import datetime
 import csv
@@ -31,6 +29,18 @@ IO_UTIL_THRESHOLD_WARN = 90.0   # % de utilização do disco
 # Limite para o uso agregado de disco do BeeGFS
 BEEGFS_USAGE_THRESHOLD_WARN = 90.0 # em porcentagem
 
+# Limites específicos para saúde de SSDs (S.M.A.R.T.)
+SSD_PERCENTAGE_USED_THRESHOLD_WARN = 85.0 # % de vida útil consumida
+SSD_TEMPERATURE_THRESHOLD_WARN = 70.0     # em Celsius
+
+# Limites para GPUs NVIDIA
+GPU_TEMP_THRESHOLD_WARN = 85.0      # em Celsius
+GPU_UTIL_THRESHOLD_WARN = 90.0      # em porcentagem
+
+# Limites para Saúde do Sistema
+LOAD_AVERAGE_RATIO_WARN = 1.5 # (load_avg / num_cores) - 1.5 significa 50% acima da capacidade total
+ZOMBIE_PROCESS_THRESHOLD_WARN = 5 # Número de processos zumbis
+
 # Lista de serviços para monitorar (use os nomes exatos dos serviços no systemd)
 SERVICES_TO_CHECK = [
     'beegfs-client',  # Exemplo para BeeGFS
@@ -39,6 +49,9 @@ SERVICES_TO_CHECK = [
     'pacemaker',      # ou 'pcsd'
     'cmdaemon'        # Bright Cluster Manager Daemon
 ]
+
+# Lista de interfaces de rede a serem ignoradas na verificação de erros
+INTERFACES_TO_IGNORE = ['lo', 'virbr']
 
 # Caminhos para os arquivos de saída
 OUTPUT_DIR = os.path.join(os.path.expanduser('~'), 'hpc_monitoring')
@@ -103,9 +116,11 @@ def check_cpu_memory():
             cpu_usage = 100.0 * (delta_total - delta_idle) / delta_total
 
         cpu_status, cpu_msg = get_status_level(cpu_usage, CPU_THRESHOLD_WARN)
+        cpu_priority = 'P2 (Alta)' if cpu_status == 'ATENÇÃO' else 'P4 (Informativa)'
     except (IOError, IndexError, ValueError) as e:
         cpu_status = 'FALHA'
         cpu_msg = f"Não foi possível ler as estatísticas de CPU do /proc/stat. Erro: {e}"
+        cpu_priority = 'P1 (Crítica)'
 
     # --- Verificação de Memória ---
     try:
@@ -131,19 +146,23 @@ def check_cpu_memory():
             mem_usage = (mem_used / mem_total) * 100.0
 
         mem_status, mem_msg = get_status_level(mem_usage, MEM_THRESHOLD_WARN)
+        mem_priority = 'P2 (Alta)' if mem_status == 'ATENÇÃO' else 'P4 (Informativa)'
     except (IOError, KeyError, ValueError) as e:
         mem_status = 'FALHA'
         mem_msg = f"Não foi possível ler as estatísticas de memória do /proc/meminfo. Erro: {e}"
+        mem_priority = 'P1 (Crítica)'
 
     return {
         'category': 'Recursos de Sistema',
         'item': 'Uso de CPU',
         'status': cpu_status,
+        'priority': cpu_priority,
         'details': cpu_msg
     }, {
         'category': 'Recursos de Sistema',
         'item': 'Uso de Memória',
         'status': mem_status,
+        'priority': mem_priority,
         'details': mem_msg
     }
 
@@ -166,35 +185,84 @@ def run_command(command):
 
 
 def check_infiniband():
-    """Verifica o status dos links InfiniBand, ignorando se a ferramenta não existir."""
-    output, code = run_command("ibstat -s")
+    """Verifica o status dos links InfiniBand e a conexão com o switch."""
+    # Primeiro, verifica se as ferramentas IB estão instaladas.
+    output, code = run_command("ibstat -V")
+    if code != 0:
+        return None  # Retorna None para ignorar completamente a verificação.
 
-    # Código 127 é o padrão para "command not found" no shell.
-    if code == 127:
-        # Retorna None para que esta verificação seja completamente ignorada.
-        return None
-
+    # Executa ibstat para obter detalhes da porta.
+    output, code = run_command("ibstat")
     if code != 0:
         return {
             'category': 'Rede de Alta Performance',
             'item': 'InfiniBand Status',
             'status': 'FALHA',
+            'priority': 'P1 (Crítica)',
             'details': f"Falha ao executar 'ibstat'. Saída: {output}"
         }
 
-    # Análise simples do output.
-    if "LinkUp" in output:
-        status = 'NORMAL'
-        details = 'Todos os links InfiniBand parecem estar ativos (LinkUp).'
+    details_list = []
+    status = 'NORMAL'
+    
+    # Análise do ibstat para cada porta
+    current_port = None
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith('Port '):
+            current_port = line.split(':')[0]
+        elif line.startswith('State:'):
+            port_state = line.split(':')[1].strip()
+            if port_state != 'Active':
+                status = 'ATENÇÃO'
+            details_list.append(f"{current_port}: Estado: {port_state}")
+        elif line.startswith('Physical state:'):
+            phys_state = line.split(':')[1].strip()
+            if phys_state != 'LinkUp':
+                status = 'ATENÇÃO'
+            details_list.append(f", Estado Físico: {phys_state}")
+        elif line.startswith('Rate:'):
+            rate = line.split(':')[1].strip()
+            details_list.append(f", Taxa: {rate}")
+    
+    ib_health_details = "".join(details_list).replace(", ", "\n", 1).strip()
+    if not ib_health_details:
+        ib_health_details = "Não foi possível extrair detalhes da porta do ibstat."
+        status = 'FALHA'
+
+    # Verifica a conexão do switch com ibnetdiscover
+    switch_details = "Informação do switch não disponível."
+    ibnet_output, ibnet_code = run_command("ibnetdiscover")
+    if ibnet_code == 0:
+        for line in ibnet_output.splitlines():
+            # Procura a linha que conecta o Adaptador de Canal (CA) a um Switch (SW)
+            if line.startswith('Ca') and '-> SW' in line:
+                try:
+                    parts = line.split('->')
+                    switch_part = parts[1].strip()
+                    # Ex: SW  21 0x... "MF0;switch-guid"
+                    switch_info = switch_part.split('"')
+                    switch_name = switch_info[1]
+                    switch_details = f"Conectado ao Switch: {switch_name}"
+                    break # Pega a primeira conexão encontrada
+                except IndexError:
+                    continue # Ignora linhas mal formatadas
+
+    final_details = f"{ib_health_details}\n{switch_details}"
+    
+    if status == 'FALHA':
+        priority = 'P1 (Crítica)'
+    elif status == 'ATENÇÃO':
+        priority = 'P2 (Alta)'
     else:
-        status = 'ATENÇÃO'
-        details = f"Verifique o estado dos links InfiniBand. Resposta do comando:\n{output}"
+        priority = 'P4 (Informativa)'
 
     return {
         'category': 'Rede de Alta Performance',
-        'item': 'InfiniBand Status',
+        'item': 'InfiniBand Health & Topology',
         'status': status,
-        'details': details
+        'priority': priority,
+        'details': final_details
     }
 
 def check_system_errors():
@@ -208,12 +276,14 @@ def check_system_errors():
             'category': 'Hardware e S.O.',
             'item': 'Logs do Kernel (dmesg)',
             'status': 'ATENÇÃO',
+            'priority': 'P2 (Alta)',
             'details': f"Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n{output}"
         }
     return {
         'category': 'Hardware e S.O.',
         'item': 'Logs do Kernel (dmesg)',
         'status': 'NORMAL',
+        'priority': 'P4 (Informativa)',
         'details': 'Nenhum erro crítico recente encontrado no dmesg.'
     }
 
@@ -240,17 +310,106 @@ def check_services():
         
         if status == 'NORMAL':
             details = f'O serviço {service} está ativo e rodando.'
+            priority = 'P4 (Informativa)'
         else:
             # Pega as últimas 5 linhas da saída para dar contexto ao erro.
             details_lines = "\n".join(output.splitlines()[-5:])
             details = f'O serviço {service} está inativo ou em estado de falha.\nDetalhes:\n{details_lines}'
+            priority = 'P1 (Crítica)'
 
         results.append({
             'category': 'Serviços Essenciais',
             'item': f'Serviço: {service}',
             'status': status,
+            'priority': priority,
             'details': details
         })
+    return results
+
+def check_disk_health():
+    """Verifica a saúde dos discos físicos usando S.M.A.R.T., com lógica específica para SSDs."""
+    _, code = run_command("smartctl -V")
+    if code != 0:
+        return []
+
+    output, code = run_command("ls /sys/block")
+    if code != 0:
+        return [{
+            'category': 'Saúde dos Discos (S.M.A.R.T.)',
+            'item': 'Listagem de Discos',
+            'status': 'FALHA',
+            'priority': 'P2 (Alta)',
+            'details': f"Não foi possível listar os dispositivos de bloco. Saída: {output}"
+        }]
+    
+    results = []
+    disk_names = [d for d in output.splitlines() if not d.startswith(('loop', 'ram', 'sr'))]
+
+    for disk in disk_names:
+        device_path = f"/dev/{disk}"
+        smart_output, smart_code = run_command(f"LC_ALL=C smartctl -H {device_path}")
+
+        status = 'FALHA'
+        priority = 'P2 (Alta)'
+        details = f"Não foi possível determinar o estado S.M.A.R.T. para {device_path}.\nSaída:\n{smart_output}"
+
+        if "SMART overall-health self-assessment test result: PASSED" in smart_output:
+            status = 'NORMAL'
+            priority = 'P4 (Informativa)'
+            details = 'O teste de autoavaliação S.M.A.R.T. foi aprovado.'
+        elif "SMART overall-health self-assessment test result: FAILED" in smart_output:
+            status = 'FALHA'
+            priority = 'P1 (Crítica)'
+            details = 'O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco.'
+        elif "SMART support is: Disabled" in smart_output:
+            status = 'ATENÇÃO'
+            priority = 'P3 (Média)'
+            details = 'O suporte a S.M.A.R.T. está desativado neste dispositivo.'
+        elif "SMART support is: Unavailable" in smart_output:
+            status = 'NORMAL'
+            priority = 'P4 (Informativa)'
+            details = 'O dispositivo não suporta S.M.A.R.T.'
+        elif smart_code != 0:
+            status = 'FALHA'
+            priority = 'P2 (Alta)'
+            details = f"Erro ao executar smartctl para {device_path}. Verifique as permissões.\nSaída:\n{smart_output}"
+
+        # Lógica adicional para SSDs
+        is_ssd_output, _ = run_command(f"cat /sys/block/{disk}/queue/rotational")
+        if is_ssd_output.strip() == '0' and status == 'NORMAL':
+            ssd_warnings = []
+            attr_output, _ = run_command(f"LC_ALL=C smartctl -A {device_path}")
+            
+            for line in attr_output.splitlines():
+                try:
+                    if "Percentage Used" in line:
+                        percentage_used = float(line.split()[-1])
+                        if percentage_used >= SSD_PERCENTAGE_USED_THRESHOLD_WARN:
+                            ssd_warnings.append(f"Desgaste ({percentage_used}%) excede o limite de {SSD_PERCENTAGE_USED_THRESHOLD_WARN}%.")
+                    elif "Temperature_Celsius" in line:
+                        temperature = int(line.split()[-1])
+                        if temperature >= SSD_TEMPERATURE_THRESHOLD_WARN:
+                            ssd_warnings.append(f"Temperatura ({temperature}°C) excede o limite de {SSD_TEMPERATURE_THRESHOLD_WARN}°C.")
+                    elif "Critical Warning" in line:
+                        crit_warn_val = int(line.split()[-1])
+                        if crit_warn_val != 0:
+                            ssd_warnings.append(f"Alerta Crítico de hardware S.M.A.R.T. ativo (valor: {crit_warn_val}).")
+                except (ValueError, IndexError):
+                    continue
+            
+            if ssd_warnings:
+                status = 'ATENÇÃO'
+                priority = 'P2 (Alta)'
+                details += " " + " ".join(ssd_warnings)
+
+        results.append({
+            'category': 'Saúde dos Discos (S.M.A.R.T.)',
+            'item': f'Disco {device_path}',
+            'status': status,
+            'priority': priority,
+            'details': details
+        })
+
     return results
 
 def find_beegfs_mounts():
@@ -296,6 +455,7 @@ def check_disk_io():
             'category': 'Performance de Disco (I/O)',
             'item': 'Execução do iostat',
             'status': 'FALHA',
+            'priority': 'P2 (Alta)',
             'details': f"Não foi possível executar o iostat. Saída: {output}"
         }]
 
@@ -338,6 +498,7 @@ def check_disk_io():
             'category': 'Performance de Disco (I/O)',
             'item': 'Análise da saída do iostat',
             'status': 'FALHA',
+            'priority': 'P2 (Alta)',
             'details': f"Não foi possível analisar a saída do iostat: {e}. Saída completa:\n{output}"
         }]
 
@@ -394,17 +555,20 @@ def check_disk_io():
 
                 # Parte 2: Constrói a string final de detalhes
                 if status == 'NORMAL':
+                    priority = 'P4 (Informativa)'
                     if has_extended_await:
                         details = f"Latência R/W: {r_await}ms/{w_await}ms, Utilização: {io_util}%."
                     else:
                         details = f"Latência: {io_await}ms, Utilização: {io_util}%."
                 else:
+                    priority = 'P2 (Alta)'
                     details = " ".join(details_list)
                 
                 results.append({
                     'category': 'Performance de Disco (I/O)',
                     'item': f'Disco {device_name} ({mount})',
                     'status': status,
+                    'priority': priority,
                     'details': details
                 })
 
@@ -413,6 +577,7 @@ def check_disk_io():
                     'category': 'Performance de Disco (I/O)',
                     'item': f'Disco {device_name} ({mount})',
                     'status': 'FALHA',
+                    'priority': 'P2 (Alta)',
                     'details': f'Não foi possível extrair as estatísticas de I/O da linha: "{line}"'
                 })
             break # Encontrou o dispositivo, vai para o próximo mount
@@ -422,6 +587,7 @@ def check_disk_io():
                 'category': 'Performance de Disco (I/O)',
                 'item': f'Disco {device_name} ({mount})',
                 'status': 'ATENÇÃO',
+                'priority': 'P3 (Média)',
                 'details': f'O dispositivo {device_name}, encontrado para {mount}, não foi localizado na saída do iostat.'
             })
 
@@ -461,8 +627,10 @@ def check_beegfs_disk_usage():
 
             # Relatório individual por partição
             part_status = 'NORMAL'
+            part_priority = 'P4 (Informativa)'
             if part_usage_percent >= BEEGFS_USAGE_THRESHOLD_WARN:
                 part_status = 'ATENÇÃO'
+                part_priority = 'P2 (Alta)'
             
             part_details = (f"Uso: {part_usage_percent:.1f}%. "
                             f"Total: {format_bytes(part_size_kb)}, "
@@ -473,6 +641,7 @@ def check_beegfs_disk_usage():
                 'category': 'Uso de Disco BeeGFS',
                 'item': f'Uso da Partição {mount}',
                 'status': part_status,
+                'priority': part_priority,
                 'details': part_details
             })
 
@@ -485,6 +654,7 @@ def check_beegfs_disk_usage():
             'category': 'Uso de Disco BeeGFS',
             'item': 'Uso Agregado das Partições',
             'status': 'FALHA',
+            'priority': 'P2 (Alta)',
             'details': 'Não foi possível obter informações de uso de nenhuma partição BeeGFS.'
         })
         return results
@@ -494,8 +664,10 @@ def check_beegfs_disk_usage():
     total_available_kb = total_size_kb - total_used_kb
     
     status = 'NORMAL'
+    priority = 'P4 (Informativa)'
     if usage_percent >= BEEGFS_USAGE_THRESHOLD_WARN:
         status = 'ATENÇÃO'
+        priority = 'P2 (Alta)'
         
     details = (f"Uso total: {usage_percent:.1f}%. "
                f"Total: {format_bytes(total_size_kb)}, "
@@ -506,11 +678,211 @@ def check_beegfs_disk_usage():
         'category': 'Uso de Disco BeeGFS',
         'item': 'Uso Agregado das Partições',
         'status': status,
+        'priority': priority,
         'details': details
     })
     
     return results
 
+def check_gpus():
+    """Verifica a temperatura, uso e memória das GPUs NVIDIA."""
+    _, code = run_command("nvidia-smi -L")
+    if code != 0:
+        return [] # Retorna lista vazia se nvidia-smi não estiver disponível
+
+    query_command = (
+        "nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total "
+        "--format=csv,noheader,nounits"
+    )
+    output, code = run_command(query_command)
+    if code != 0:
+        return [{
+            'category': 'Recursos de GPU',
+            'item': 'Execução do nvidia-smi',
+            'status': 'FALHA',
+            'priority': 'P2 (Alta)',
+            'details': f"Não foi possível obter dados das GPUs. Saída:\n{output}"
+        }]
+
+    results = []
+    for line in output.splitlines():
+        try:
+            parts = [p.strip() for p in line.split(',')]
+            gpu_index, name, temp, util, mem_used, mem_total = parts
+            
+            temp = float(temp)
+            util = float(util)
+            mem_used = float(mem_used)
+            mem_total = float(mem_total)
+            mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
+
+            status = 'NORMAL'
+            warnings = []
+            if temp >= GPU_TEMP_THRESHOLD_WARN:
+                status = 'ATENÇÃO'
+                warnings.append(f"Temp: {temp}°C (Limite: {GPU_TEMP_THRESHOLD_WARN}°C)")
+            
+            if util >= GPU_UTIL_THRESHOLD_WARN:
+                status = 'ATENÇÃO'
+                warnings.append(f"Uso: {util}% (Limite: {GPU_UTIL_THRESHOLD_WARN}%)")
+
+            if status == 'NORMAL':
+                priority = 'P4 (Informativa)'
+                details = f"Temp: {temp}°C, Uso: {util}%, Memória: {mem_used:.0f}/{mem_total:.0f} MB ({mem_percent:.1f}%)"
+            else:
+                priority = 'P2 (Alta)'
+                details = ", ".join(warnings)
+
+            results.append({
+                'category': 'Recursos de GPU',
+                'item': f'GPU {gpu_index}: {name}',
+                'status': status,
+                'priority': priority,
+                'details': details
+            })
+        except (ValueError, IndexError):
+            results.append({
+                'category': 'Recursos de GPU',
+                'item': f'Análise de GPU',
+                'status': 'FALHA',
+                'priority': 'P2 (Alta)',
+                'details': f'Não foi possível analisar a linha de dados da GPU: "{line}"'
+            })
+    return results
+
+def check_network_errors():
+    """Verifica as interfaces de rede por pacotes com erro ou descartados."""
+    try:
+        with open('/proc/net/dev', 'r') as f:
+            lines = f.readlines()[2:] # Pula as duas linhas de cabeçalho
+    except IOError:
+        return [{
+            'category': 'Saúde da Rede',
+            'item': 'Interfaces de Rede',
+            'status': 'FALHA',
+            'priority': 'P3 (Média)',
+            'details': 'Não foi possível ler /proc/net/dev.'
+        }]
+    
+    results = []
+    for line in lines:
+        try:
+            parts = line.split()
+            interface = parts[0].strip(':')
+            
+            # Pula as interfaces na lista de ignorados
+            if any(interface.startswith(prefix) for prefix in INTERFACES_TO_IGNORE):
+                continue
+
+            # Colunas (Receive): bytes, packets, errs, drop ... (índices 1, 2, 3, 4)
+            # Colunas (Transmit): bytes, packets, errs, drop ... (índices 9, 10, 11, 12)
+            rx_errs = int(parts[3])
+            rx_drop = int(parts[4])
+            tx_errs = int(parts[11])
+            tx_drop = int(parts[12])
+
+            total_errors = rx_errs + tx_errs
+            total_drops = rx_drop + tx_drop
+
+            if total_errors > 0 or total_drops > 0:
+                status = 'ATENÇÃO'
+                priority = 'P3 (Média)'
+                details = f"Erros: {total_errors} (RX:{rx_errs}, TX:{tx_errs}), Descartados: {total_drops} (RX:{rx_drop}, TX:{tx_drop})"
+                results.append({
+                    'category': 'Saúde da Rede',
+                    'item': f'Interface {interface}',
+                    'status': status,
+                    'priority': priority,
+                    'details': details
+                })
+        except (ValueError, IndexError):
+            continue
+    
+    if not results:
+         return [{
+            'category': 'Saúde da Rede',
+            'item': 'Interfaces de Rede',
+            'status': 'NORMAL',
+            'priority': 'P4 (Informativa)',
+            'details': 'Nenhum erro ou pacote descartado encontrado nas interfaces.'
+        }]
+         
+    return results
+
+def check_load_average():
+    """Verifica a média de carga do sistema."""
+    try:
+        with open('/proc/loadavg', 'r') as f:
+            load_1m, load_5m, load_15m = f.read().split()[:3]
+        
+        nproc_out, nproc_code = run_command("nproc")
+        num_cores = int(nproc_out) if nproc_code == 0 else 1
+
+        load_ratio = float(load_1m) / num_cores
+        status = 'NORMAL'
+        priority = 'P4 (Informativa)'
+        details = f"Carga (1m, 5m, 15m): {load_1m}, {load_5m}, {load_15m} em {num_cores} núcleos."
+
+        if load_ratio >= LOAD_AVERAGE_RATIO_WARN:
+            status = 'ATENÇÃO'
+            priority = 'P2 (Alta)'
+            details += f" A carga de 1 minuto ({load_1m}) é alta para o número de núcleos."
+
+        return {
+            'category': 'Recursos de Sistema',
+            'item': 'Média de Carga (Load Average)',
+            'status': status,
+            'priority': priority,
+            'details': details
+        }
+    except (IOError, ValueError):
+        return {
+            'category': 'Recursos de Sistema',
+            'item': 'Média de Carga (Load Average)',
+            'status': 'FALHA',
+            'priority': 'P2 (Alta)',
+            'details': 'Não foi possível ler a média de carga de /proc/loadavg.'
+        }
+        
+def check_zombie_processes():
+    """Verifica a existência de processos zumbis."""
+    output, code = run_command("ps axo stat | grep -c '^Z'")
+    
+    if code not in [0, 1]: # Grep retorna 1 se não encontrar nada, o que é OK.
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Processos Zumbis',
+            'status': 'FALHA',
+            'priority': 'P3 (Média)',
+            'details': f"Falha ao executar o comando para verificar processos zumbis. Saída: {output}"
+        }
+    
+    try:
+        zombie_count = int(output)
+        status = 'NORMAL'
+        priority = 'P4 (Informativa)'
+        details = f"Encontrados {zombie_count} processos zumbis."
+        
+        if zombie_count >= ZOMBIE_PROCESS_THRESHOLD_WARN:
+            status = 'ATENÇÃO'
+            priority = 'P3 (Média)'
+            details += f" O número excede o limite de {ZOMBIE_PROCESS_THRESHOLD_WARN}."
+            
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Processos Zumbis',
+            'status': status,
+            'priority': priority,
+            'details': details
+        }
+    except ValueError:
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Processos Zumbis',
+            'status': 'FALHA',
+            'priority': 'P3 (Média)',
+            'details': f"Não foi possível converter a contagem de zumbis para número. Saída: '{output}'"
+        }
 
 # --- FUNÇÕES DE SAÍDA (LOG E RELATÓRIO) ---
 
@@ -520,7 +892,7 @@ def setup_output_files():
     if not os.path.exists(CSV_LOG_FILE):
         with open(CSV_LOG_FILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['timestamp', 'category', 'item', 'status', 'details'])
+            writer.writerow(['timestamp', 'category', 'item', 'status', 'priority', 'details'])
 
 def log_to_csv(all_checks, timestamp):
     """Adiciona os resultados das verificações ao arquivo CSV."""
@@ -532,15 +904,23 @@ def log_to_csv(all_checks, timestamp):
                 check.get('category', 'N/A'),
                 check.get('item', 'N/A'),
                 check.get('status', 'N/A'),
+                check.get('priority', 'N/A'),
                 check.get('details', 'N/A')
             ])
 
-def generate_html_report(all_checks, timestamp):
+def generate_html_report(all_checks, timestamp, hostname):
     """Gera um relatório HTML com base nos resultados das verificações."""
     status_map = {
         'NORMAL': {'icon': '✅', 'color': '#28a745'},
         'ATENÇÃO': {'icon': '⚠️', 'color': '#ffc107'},
         'FALHA': {'icon': '❌', 'color': '#dc3545'}
+    }
+    
+    priority_map = {
+        'P1 (Crítica)': {'color': '#721c24', 'bg_color': '#f8d7da'},
+        'P2 (Alta)':    {'color': '#856404', 'bg_color': '#fff3cd'},
+        'P3 (Média)':   {'color': '#004085', 'bg_color': '#cce5ff'},
+        'P4 (Informativa)': {'color': '#155724', 'bg_color': '#d4edda'}
     }
 
     # Agrupa os itens por categoria
@@ -569,14 +949,24 @@ def generate_html_report(all_checks, timestamp):
             .item { display: flex; align-items: flex-start; border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 10px; background: #fafafa; }
             .item-status { font-size: 28px; margin-right: 15px; }
             .item-content { flex-grow: 1; }
-            .item-title { font-weight: bold; font-size: 16px; }
+            .item-title { font-weight: bold; font-size: 16px; display: flex; align-items: center; }
             .item-details { font-size: 14px; color: #666; white-space: pre-wrap; word-wrap: break-word; }
+            .priority-tag {
+                font-size: 12px;
+                font-weight: bold;
+                padding: 3px 8px;
+                border-radius: 12px;
+                margin-left: 10px;
+                color: var(--p-color);
+                background-color: var(--p-bg-color);
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <header>
                 <h1>Relatório de Status do Cluster HPC</h1>
+                <p>Servidor: """ + hostname + """</p>
                 <p>Gerado em: """ + timestamp + """</p>
             </header>
     """
@@ -585,11 +975,21 @@ def generate_html_report(all_checks, timestamp):
         html_content += f'<div class="category"><h2>{category}</h2>'
         for item in sorted(items, key=lambda x: x['item']):
             status_info = status_map.get(item['status'], {'icon': '?', 'color': '#6c757d'})
+            
+            priority_tag_html = ''
+            if item['status'] != 'NORMAL':
+                priority = item.get('priority', 'P3 (Média)')
+                priority_info = priority_map.get(priority, {'color': '#6c757d', 'bg_color': '#e9ecef'})
+                priority_tag_html = f'<span class="priority-tag" style="--p-color: {priority_info["color"]}; --p-bg-color: {priority_info["bg_color"]};">{priority}</span>'
+
             html_content += f"""
             <div class="item" style="border-left: 5px solid {status_info['color']};">
                 <div class="item-status">{status_info['icon']}</div>
                 <div class="item-content">
-                    <div class="item-title">{item['item']} - <span style="color: {status_info['color']};">{item['status']}</span></div>
+                    <div class="item-title">
+                        {item['item']} - <span style="color: {status_info['color']}; margin-left: 4px;">{item['status']}</span>
+                        {priority_tag_html}
+                    </div>
                     <div class="item-details">{item['details']}</div>
                 </div>
             </div>
@@ -610,30 +1010,39 @@ def generate_html_report(all_checks, timestamp):
 def generate_test_data():
     """Gera dados de exemplo para o relatório HTML de teste."""
     return [
-        {'category': 'Recursos de Sistema', 'item': 'Uso de CPU', 'status': 'NORMAL', 'details': 'Uso de 15.2%'},
-        {'category': 'Recursos de Sistema', 'item': 'Uso de Memória', 'status': 'ATENÇÃO', 'details': 'Uso de 88.9% excede o limite de 85.0%'},
-        {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Status', 'status': 'NORMAL', 'details': 'Todos os links InfiniBand parecem estar ativos (LinkUp).'},
-        {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'details': 'Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[  123.456] mce: [Hardware Error]: CPU 0: Machine Check...'},
-        {'category': 'Serviços Essenciais', 'item': 'Serviço: beegfs-client', 'status': 'NORMAL', 'details': 'O serviço beegfs-client está ativo e rodando.'},
-        {'category': 'Serviços Essenciais', 'item': 'Serviço: mysql', 'status': 'FALHA', 'details': 'O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because the control process exited with error code.'},
-        {'category': 'Performance de Disco (I/O)', 'item': 'Disco sda1 (/mnt/BeeGFS/meta)', 'status': 'NORMAL', 'details': 'Latência R/W: 5.2ms/8.1ms, Utilização: 25.4%.'},
-        {'category': 'Performance de Disco (I/O)', 'item': 'Disco sdb1 (/mnt/BeeGFS/storage)', 'status': 'ATENÇÃO', 'details': 'Latência de escrita de 65.7ms excede o limite. Utilização de 95.1% excede o limite.'},
-        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso da Partição /BeeGFS/meta', 'status': 'NORMAL', 'details': 'Uso: 75.0%. Total: 2.0 TB, Usado: 1.5 TB, Disponível: 500.0 GB.'},
-        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso da Partição /BeeGFS/storage', 'status': 'ATENÇÃO', 'details': 'Uso: 96.3%. Total: 8.0 TB, Usado: 7.7 TB, Disponível: 250.0 GB.'},
-        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso Agregado das Partições', 'status': 'ATENÇÃO', 'details': 'Uso total: 92.5%. Total: 10.0 TB, Usado: 9.2 TB, Disponível: 750.0 GB.'}
+        {'category': 'Recursos de Sistema', 'item': 'Uso de CPU', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Uso de 15.2%'},
+        {'category': 'Recursos de Sistema', 'item': 'Uso de Memória', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Uso de 88.9% excede o limite de 85.0%'},
+        {'category': 'Recursos de Sistema', 'item': 'Média de Carga (Load Average)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Carga (1m, 5m, 15m): 35.5, 20.1, 15.0 em 16 núcleos. A carga de 1 minuto (35.5) é alta para o número de núcleos.'},
+        {'category': 'Recursos de GPU', 'item': 'GPU 0: NVIDIA A100', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Temp: 92.0°C (Limite: 85.0°C)'},
+        {'category': 'Recursos de GPU', 'item': 'GPU 1: NVIDIA A100', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Temp: 65.0°C, Uso: 80.0%, Memória: 10240/40960 MB (25.0%)'},
+        {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Port 1: Estado: Active\n, Estado Físico: Down\n, Taxa: 40 Gb/s (QDR)\nConectado ao Switch: Mellanox Technologies Aggregation Switch'},
+        {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[  123.456] mce: [Hardware Error]: CPU 0: Machine Check...'},
+        {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/sda', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'O teste de autoavaliação S.M.A.R.T. foi aprovado.'},
+        {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/sdb', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': 'O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco.'},
+        {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/nvme0n1', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'O teste de autoavaliação S.M.A.R.T. foi aprovado. Desgaste (90.0%) excede o limite de 85.0%.'},
+        {'category': 'Saúde da Rede', 'item': 'Interface eth0', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Erros: 102 (RX:102, TX:0), Descartados: 550 (RX:500, TX:50)'},
+        {'category': 'Saúde do S.O.', 'item': 'Processos Zumbis', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Encontrados 10 processos zumbis. O número excede o limite de 5.'},
+        {'category': 'Serviços Essenciais', 'item': 'Serviço: beegfs-client', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'O serviço beegfs-client está ativo e rodando.'},
+        {'category': 'Serviços Essenciais', 'item': 'Serviço: mysql', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': 'O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because o control process exited with error code.'},
+        {'category': 'Performance de Disco (I/O)', 'item': 'Disco sdb1 (/mnt/BeeGFS/storage)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Latência de escrita de 65.7ms excede o limite. Utilização de 95.1% excede o limite.'},
+        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso da Partição /BeeGFS/storage', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Uso: 96.3%. Total: 8.0 TB, Usado: 7.7 TB, Disponível: 250.0 GB.'},
+        {'category': 'Uso de Disco BeeGFS', 'item': 'Uso Agregado das Partições', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Uso total: 92.5%. Total: 10.0 TB, Usado: 9.2 TB, Disponível: 750.0 GB.'}
     ]
 
 # --- FUNÇÃO PRINCIPAL ---
 
 def main():
     """Função principal que orquestra as verificações e a geração de saídas."""
+    
+    hostname, _ = run_command("hostname")
+    
     # Verifica se o modo de teste foi ativado
     if '--test-html' in sys.argv:
         print("Modo de teste: Gerando relatório HTML de exemplo...")
         setup_output_files() # Garante que o diretório de saída existe
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         test_checks = generate_test_data()
-        generate_html_report(test_checks, timestamp)
+        generate_html_report(test_checks, timestamp, hostname)
         print("Relatório de teste gerado com sucesso.")
         return # Finaliza a execução após gerar o teste
 
@@ -649,13 +1058,18 @@ def main():
     all_checks = []
     cpu_check, mem_check = check_cpu_memory()
     all_checks.extend([cpu_check, mem_check])
+    all_checks.append(check_load_average())
+    all_checks.extend(check_gpus())
     
     # Adiciona a verificação de InfiniBand apenas se ela for aplicável (não retornar None)
     ib_check = check_infiniband()
     if ib_check:
         all_checks.append(ib_check)
 
+    all_checks.extend(check_network_errors())
     all_checks.append(check_system_errors())
+    all_checks.extend(check_disk_health())
+    all_checks.append(check_zombie_processes())
     all_checks.extend(check_services())
     all_checks.extend(check_disk_io())
     all_checks.extend(check_beegfs_disk_usage())
@@ -673,7 +1087,7 @@ def main():
             print("Problemas detectados. Gerando relatório HTML...")
         else: # A geração foi forçada
             print("Geração de relatório forçada via argumento. Gerando relatório HTML...")
-        generate_html_report(all_checks, timestamp)
+        generate_html_report(all_checks, timestamp, hostname)
     else:
         print("Nenhum problema detectado. O relatório HTML não será gerado.")
 
@@ -682,5 +1096,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
