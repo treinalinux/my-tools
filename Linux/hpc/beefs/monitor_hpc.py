@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.6
+# version......: 1.3.7
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -232,26 +232,21 @@ def check_infiniband():
             rate = details.get('Rate', 'N/A')
             link_layer = details.get('Link layer', 'InfiniBand')
             
+            # Se for uma porta Ethernet e estiver desabilitada, pule completamente.
+            if link_layer == 'Ethernet' and phys_state == 'Disabled':
+                continue
+
             connection = switch_connections.get(port, '<span style="color: red;">Não conectado</span>')
             
             health_part = f"({link_layer}) Estado={port_state}, Físico={phys_state}, Taxa={rate}"
             
             is_problem = False
-            if link_layer == 'Ethernet':
-                if phys_state == 'Disabled':
-                    health_part_colored = f'<span style="color: grey;">{health_part}</span>'
-                    connection = 'Observação: Porta Ethernet inativa.'
-                elif phys_state == 'LinkUp':
-                     health_part_colored = f'<span style="color: green;">{health_part}</span>'
-                else:
-                     is_problem = True
-                     health_part_colored = f'<span style="color: red;">{health_part}</span>'
-            else: # InfiniBand
-                if port_state == 'Active' and phys_state == 'LinkUp':
-                    health_part_colored = f'<span style="color: green;">{health_part}</span>'
-                else:
-                    is_problem = True
-                    health_part_colored = f'<span style="color: red;">{health_part}</span>'
+            # Lógica de cores e status
+            if port_state == 'Active' and phys_state == 'LinkUp':
+                health_part_colored = f'<span style="color: green;">{health_part}</span>'
+            else:
+                is_problem = True
+                health_part_colored = f'<span style="color: red;">{health_part}</span>'
 
             if is_problem:
                 overall_status = 'ATENÇÃO'
@@ -259,10 +254,9 @@ def check_infiniband():
             final_details_lines.append(f"{ca_name} - {port}: {health_part_colored} -> {connection}")
 
     if not final_details_lines:
-        final_details = "Não foi possível extrair detalhes da porta do ibstat."
-        overall_status = 'FALHA'
-    else:
-        final_details = "\n".join(final_details_lines)
+        return None # Nenhuma porta relevante encontrada, não gere um item no relatório
+
+    final_details = "\n".join(final_details_lines)
 
     priority = 'P1 (Crítica)' if overall_status == 'FALHA' else ('P2 (Alta)' if overall_status == 'ATENÇÃO' else 'P4 (Informativa)')
     return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
