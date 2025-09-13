@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.0
+# version......: 1.3.1
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -204,45 +204,45 @@ def check_infiniband():
     if not ports_info_lines: status = 'FALHA'
     
     switch_details = "Informação do switch não disponível."
-    ibnet_output, ibnet_code = run_command("ibnetdiscover")
-    if ibnet_code == 0:
-        for line in ibnet_output.splitlines():
-            if line.startswith('Ca') and '-> SW' in line:
-                try:
-                    parts = line.split('"')
-                    if len(parts) > 1:
-                        switch_name = parts[1]
-                        switch_details = f"Conectado ao Switch: {switch_name}"
-                        break
-                except IndexError: continue
-    
+    _, iblinkinfo_code = run_command("iblinkinfo -V")
+    if iblinkinfo_code == 0:
+        hostname, _ = run_command("hostname -s")
+        if hostname:
+            command = f"iblinkinfo | grep -A 10 '^CA: {hostname}'"
+            link_info_output, _ = run_command(command)
+            found_switches = []
+            for line in link_info_output.splitlines():
+                if '==>' in line and '"' in line and '[' in line:
+                    try:
+                        switch_name = line.split('"')[1]
+                        if switch_name not in found_switches:
+                            found_switches.append(switch_name)
+                    except IndexError:
+                        continue
+            if found_switches:
+                switch_details = "Conectado ao(s) Switch(es): " + ", ".join(found_switches)
+
     final_details = f"{ib_health_details}\n{switch_details}"
     priority = 'P1 (Crítica)' if status == 'FALHA' else ('P2 (Alta)' if status == 'ATENÇÃO' else 'P4 (Informativa)')
     return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': status, 'priority': priority, 'details': final_details}
 
 def check_system_errors():
     """Verifica o log do kernel (dmesg) em busca de erros de hardware."""
-    # Primeiro, verifica se dmesg pode ser lido sem erros de permissão
     dmesg_test_output, dmesg_test_code = run_command("dmesg -T | head -n 1")
     if dmesg_test_code != 0 and "Operation not permitted" in dmesg_test_output:
         return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': 'Não foi possível ler o buffer do kernel. Execute o script com sudo ou verifique as permissões (sysctl kernel.dmesg_restrict).'}
 
-    # Executa dmesg e filtra diretamente, evitando problemas de quoting
-    # Usamos -T para timestamps, o que ajuda na análise.
     grep_pattern = '|'.join(HARDWARE_ERROR_KEYWORDS)
     command = f"dmesg -T | grep -iE '{grep_pattern}'"
     output, code = run_command(command)
 
-    # Grep retorna 0 se encontrar algo, 1 se não encontrar, e >1 para erros de execução.
     if code == 0 and output:
-        # Pega as últimas 20 linhas de erro para não poluir o relatório
         output_lines = output.splitlines()
         details_output = "\n".join(output_lines[-20:])
         return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': f"Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n{details_output}"}
-    elif code > 1: # Erro real na execução do grep
+    elif code > 1:
         return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': f"Erro ao executar o grep nos logs do dmesg. Saída: {output}"}
     
-    # code == 1 significa que grep não encontrou nada, o que é o estado NORMAL.
     return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Nenhum erro crítico recente encontrado no dmesg.'}
 
 def check_services():
@@ -450,4 +450,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
