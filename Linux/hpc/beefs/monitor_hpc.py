@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.1
+# version......: 1.3.2
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -175,56 +175,96 @@ def check_cpu_memory():
 
 def check_infiniband():
     """Verifica o status dos links InfiniBand e a conexão com o switch."""
-    _, code = run_command("ibstat -V")
-    if code != 0: return None
+    _, ibstat_code = run_command("ibstat -V")
+    _, iblinkinfo_code = run_command("iblinkinfo -V")
+    if ibstat_code != 0 or iblinkinfo_code != 0:
+        return None
 
-    output, code = run_command("ibstat")
-    if code != 0: return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Status', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': f"Falha ao executar 'ibstat'. Saída: {output}"}
+    full_ibstat_output, code = run_command("ibstat")
+    if code != 0:
+        return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Status', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': f"Falha ao executar 'ibstat'. Saída: {full_ibstat_output}"}
 
-    status, ports_info_lines = 'NORMAL', []
-    ca_blocks = output.split('CA \'')
+    overall_status = 'NORMAL'
+    final_details_lines = []
+    
+    ca_blocks = full_ibstat_output.split('CA \'')
     for block in ca_blocks[1:]:
         lines = block.splitlines()
         ca_name = lines[0].split('\'')[0]
-        port_details, current_port = {}, None
+        
+        port_details_map = {}
+        current_port = None
         for line in lines[1:]:
             line = line.strip()
             if line.startswith('Port '):
                 current_port = line.split(':')[0]
-                if current_port not in port_details: port_details[current_port] = {}
+                if current_port not in port_details_map: port_details_map[current_port] = {}
             elif ':' in line and current_port:
                 key, value = line.split(':', 1)
-                port_details[current_port][key.strip()] = value.strip()
-        for port, details in port_details.items():
-            port_state, phys_state, rate = details.get('State', 'N/A'), details.get('Physical state', 'N/A'), details.get('Rate', 'N/A')
-            if port_state != 'Active' or phys_state != 'LinkUp': status = 'ATENÇÃO'
-            ports_info_lines.append(f"{ca_name} - {port}: Estado={port_state}, Físico={phys_state}, Taxa={rate}")
-    
-    ib_health_details = "\n".join(ports_info_lines) if ports_info_lines else "Não foi possível extrair detalhes da porta do ibstat."
-    if not ports_info_lines: status = 'FALHA'
-    
-    switch_details = "Informação do switch não disponível."
-    _, iblinkinfo_code = run_command("iblinkinfo -V")
-    if iblinkinfo_code == 0:
-        hostname, _ = run_command("hostname -s")
-        if hostname:
-            command = f"iblinkinfo | grep -A 10 '^CA: {hostname}'"
-            link_info_output, _ = run_command(command)
-            found_switches = []
-            for line in link_info_output.splitlines():
-                if '==>' in line and '"' in line and '[' in line:
-                    try:
-                        switch_name = line.split('"')[1]
-                        if switch_name not in found_switches:
-                            found_switches.append(switch_name)
-                    except IndexError:
-                        continue
-            if found_switches:
-                switch_details = "Conectado ao(s) Switch(es): " + ", ".join(found_switches)
+                port_details_map[current_port][key.strip()] = value.strip()
 
-    final_details = f"{ib_health_details}\n{switch_details}"
-    priority = 'P1 (Crítica)' if status == 'FALHA' else ('P2 (Alta)' if status == 'ATENÇÃO' else 'P4 (Informativa)')
-    return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': status, 'priority': priority, 'details': final_details}
+        link_info_output, _ = run_command(f"iblinkinfo -C {ca_name}")
+        switch_connections = {} 
+        
+        port_link_blocks = link_info_output.split(f'CA: {ca_name} Port ')
+        for port_block in port_link_blocks[1:]:
+            port_lines = port_block.strip().splitlines()
+            if not port_lines: continue
+            
+            port_num = port_lines[0].split(':')[0]
+            port_key = f"Port {port_num}"
+            
+            switch_info_line = port_lines[1] if len(port_lines) > 1 else ""
+            if '==>' in switch_info_line and '"' in switch_info_line:
+                try:
+                    switch_name = switch_info_line.split('"')[1]
+                    switch_port = switch_info_line.split('[')[-1].split(']')[0].strip()
+                    switch_connections[port_key] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
+                except IndexError:
+                    switch_connections[port_key] = '<span style="color: red;">Erro ao analisar conexão</span>'
+            else:
+                switch_connections[port_key] = '<span style="color: red;">Não conectado</span>'
+
+        for port, details in sorted(port_details_map.items()):
+            port_state = details.get('State', 'N/A')
+            phys_state = details.get('Physical state', 'N/A')
+            rate = details.get('Rate', 'N/A')
+            link_layer = details.get('Link layer', 'InfiniBand')
+            
+            connection = switch_connections.get(port, '<span style="color: red;">Não conectado</span>')
+            
+            health_part = f"({link_layer}) Estado={port_state}, Físico={phys_state}, Taxa={rate}"
+            
+            is_problem = False
+            if link_layer == 'Ethernet':
+                if phys_state == 'Disabled':
+                    health_part_colored = f'<span style="color: grey;">{health_part}</span>'
+                    connection = 'Observação: Porta Ethernet inativa.'
+                elif phys_state == 'LinkUp':
+                     health_part_colored = f'<span style="color: green;">{health_part}</span>'
+                else:
+                     is_problem = True
+                     health_part_colored = f'<span style="color: red;">{health_part}</span>'
+            else: # InfiniBand
+                if port_state == 'Active' and phys_state == 'LinkUp':
+                    health_part_colored = f'<span style="color: green;">{health_part}</span>'
+                else:
+                    is_problem = True
+                    health_part_colored = f'<span style="color: red;">{health_part}</span>'
+
+            if is_problem:
+                overall_status = 'ATENÇÃO'
+            
+            final_details_lines.append(f"{ca_name} - {port}: {health_part_colored} -> {connection}")
+
+    if not final_details_lines:
+        final_details = "Não foi possível extrair detalhes da porta do ibstat."
+        overall_status = 'FALHA'
+    else:
+        final_details = "\n".join(final_details_lines)
+
+    priority = 'P1 (Crítica)' if overall_status == 'FALHA' else ('P2 (Alta)' if overall_status == 'ATENÇÃO' else 'P4 (Informativa)')
+    return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
 
 def check_system_errors():
     """Verifica o log do kernel (dmesg) em busca de erros de hardware."""
@@ -450,3 +490,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
