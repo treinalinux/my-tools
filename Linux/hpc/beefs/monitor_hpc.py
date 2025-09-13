@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.5
+# version......: 1.0.6
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -69,8 +69,8 @@ KNOWLEDGE_BASE = {
     'xpmem: module verification failed': 'Sugestão: Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.',
     'bnxt_en': 'Sugestão: Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados.',
     # InfiniBand
-    'Estado Físico: Down': 'Sugestão: O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.',
-    'Estado: Down': 'Sugestão: O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.',
+    'Físico=Down': 'Sugestão: O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.',
+    'Estado=Down': 'Sugestão: O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.',
     # Rede Ethernet
     'Interface bond': 'Sugestão: Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`.',
     # S.M.A.R.T.
@@ -1229,4 +1229,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
