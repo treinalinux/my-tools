@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.9
+# version......: 1.4.0
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -216,23 +216,36 @@ def check_infiniband(debug_mode=False):
 
     # Passo 2: Analisar iblinkinfo para obter conexões
     all_switch_connections = {}
-    link_info_output, _ = run_command("iblinkinfo")
-    current_ca_name = None
-    for line in link_info_output.splitlines():
-        if line.startswith('CA:'):
-            current_ca_name = line.split()[1]
-        elif '==>' in line and '"' in line and current_ca_name:
-            try:
-                port_num = line.split()[0]
-                port_key = f"Port {port_num}"
-                switch_name = line.split('"')[1]
-                switch_port = line.split('[')[-1].split(']')[0].strip()
-                if current_ca_name not in all_switch_connections:
-                    all_switch_connections[current_ca_name] = {}
-                all_switch_connections[current_ca_name][port_key] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
-            except IndexError: continue
+    hostname, _ = run_command("hostname -s")
+    if hostname:
+        # Usa o comando grep sugerido pelo usuário para focar apenas no host local
+        link_info_output, _ = run_command(f"iblinkinfo | grep -A 2 '^CA: {hostname}'")
+        if debug_mode: print(f"\nSaída do iblinkinfo filtrada para '{hostname}':\n{link_info_output}")
+        
+        current_hca_name = None
+        for line in link_info_output.splitlines():
+            if line.startswith(f"CA: {hostname}"):
+                try:
+                    current_hca_name = line.split()[2].rstrip(':') # Ex: HCA-1
+                except IndexError:
+                    current_hca_name = None
+            elif '==>' in line and '"' in line and current_hca_name:
+                try:
+                    # O GUID da porta do HCA está no início da linha
+                    hca_port_guid = line.split()[0]
+                    switch_name = line.split('"')[1]
+                    switch_port = line.split('[')[-1].split(']')[0].strip()
+                    # Agora precisamos encontrar a qual placa (mlx5_x) este GUID pertence
+                    for ca, ports in all_ports_status.items():
+                        for port_name, details in ports.items():
+                            if details.get('Port GUID', '').endswith(hca_port_guid):
+                                if ca not in all_switch_connections:
+                                    all_switch_connections[ca] = {}
+                                all_switch_connections[ca][port_name] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
+                                break
+                except IndexError: continue
     
-    if debug_mode: print(f"\nConexões de switch encontradas pelo iblinkinfo:\n{json.dumps(all_switch_connections, indent=2)}")
+    if debug_mode: print(f"\nConexões de switch mapeadas:\n{json.dumps(all_switch_connections, indent=2)}")
 
     # Passo 3: Combinar as informações e gerar o relatório
     for ca_name, ports in sorted(all_ports_status.items()):
@@ -507,5 +520,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
