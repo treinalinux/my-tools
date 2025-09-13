@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.3
+# version......: 1.0.4
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -61,6 +61,23 @@ HTML_REPORT_FILE = os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
 # Palavras-chave para procurar em logs do sistema (ex: dmesg)
 HARDWARE_ERROR_KEYWORDS = ['error', 'fail', 'critical', 'fatal', 'segfault']
 
+# --- BASE DE CONHECIMENTO PARA SUGESTÕES DE RESOLUÇÃO ---
+KNOWLEDGE_BASE = {
+    # dmesg
+    'ACPI Error': 'Sugestão: Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.',
+    'failed to assign': 'Sugestão: Falha ao alocar recursos de PCI. Pode ser um problema de compatibilidade de hardware ou BIOS. Tente atualizar o firmware ou verificar as configurações de PCI no BIOS.',
+    'xpmem: module verification failed': 'Sugestão: Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.',
+    'bnxt_en': 'Sugestão: Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados.',
+    # InfiniBand
+    'Estado Físico: Down': 'Sugestão: O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.',
+    'Estado: Down': 'Sugestão: O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.',
+    # Rede Ethernet
+    'Interface bond': 'Sugestão: Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`.',
+    # S.M.A.R.T.
+    'FAILED': 'Sugestão: O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.',
+    'Desgaste': 'Sugestão: O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.'
+}
+
 
 # --- FUNÇÕES AUXILIARES ---
 
@@ -76,6 +93,13 @@ def format_bytes(size_kb):
         size /= 1024.0
         i += 1
     return f"{size:.1f} {size_names[i]}"
+
+def get_kb_suggestion(details):
+    """Procura por palavras-chave nos detalhes e retorna uma sugestão da base de conhecimento."""
+    for keyword, suggestion in KNOWLEDGE_BASE.items():
+        if keyword in details:
+            return suggestion
+    return None
 
 
 # --- FUNÇÕES DE VERIFICAÇÃO ---
@@ -186,12 +210,10 @@ def run_command(command):
 
 def check_infiniband():
     """Verifica o status dos links InfiniBand e a conexão com o switch."""
-    # Primeiro, verifica se as ferramentas IB estão instaladas.
-    output, code = run_command("ibstat -V")
+    _, code = run_command("ibstat -V")
     if code != 0:
-        return None  # Retorna None para ignorar completamente a verificação.
+        return None
 
-    # Executa ibstat para obter detalhes da porta.
     output, code = run_command("ibstat")
     if code != 0:
         return {
@@ -202,51 +224,55 @@ def check_infiniband():
             'details': f"Falha ao executar 'ibstat'. Saída: {output}"
         }
 
-    details_list = []
     status = 'NORMAL'
+    ports_info_lines = []
     
-    # Análise do ibstat para cada porta
-    current_port = None
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith('Port '):
-            current_port = line.split(':')[0]
-        elif line.startswith('State:'):
-            port_state = line.split(':')[1].strip()
-            if port_state != 'Active':
+    # Processa a saída por blocos de 'CA' (Channel Adapter)
+    ca_blocks = output.split('CA \'')
+    for block in ca_blocks[1:]:
+        lines = block.splitlines()
+        ca_name = lines[0].split('\'')[0]
+        
+        port_details = {}
+        current_port = None
+        for line in lines[1:]: # Pula a linha do nome do CA
+            line = line.strip()
+            if line.startswith('Port '):
+                current_port = line.split(':')[0]
+                if current_port not in port_details:
+                    port_details[current_port] = {}
+            elif ':' in line and current_port:
+                key, value = line.split(':', 1)
+                port_details[current_port][key.strip()] = value.strip()
+
+        for port, details in port_details.items():
+            port_state = details.get('State', 'N/A')
+            phys_state = details.get('Physical state', 'N/A')
+            rate = details.get('Rate', 'N/A')
+            
+            if port_state != 'Active' or phys_state != 'LinkUp':
                 status = 'ATENÇÃO'
-            details_list.append(f"{current_port}: Estado: {port_state}")
-        elif line.startswith('Physical state:'):
-            phys_state = line.split(':')[1].strip()
-            if phys_state != 'LinkUp':
-                status = 'ATENÇÃO'
-            details_list.append(f", Estado Físico: {phys_state}")
-        elif line.startswith('Rate:'):
-            rate = line.split(':')[1].strip()
-            details_list.append(f", Taxa: {rate}")
-    
-    ib_health_details = "".join(details_list).replace(", ", "\n", 1).strip()
-    if not ib_health_details:
+            
+            ports_info_lines.append(f"{ca_name} - {port}: Estado={port_state}, Físico={phys_state}, Taxa={rate}")
+
+    if not ports_info_lines:
         ib_health_details = "Não foi possível extrair detalhes da porta do ibstat."
         status = 'FALHA'
+    else:
+        ib_health_details = "\n".join(ports_info_lines)
 
-    # Verifica a conexão do switch com ibnetdiscover
+    # Verifica a conexão do switch
     switch_details = "Informação do switch não disponível."
     ibnet_output, ibnet_code = run_command("ibnetdiscover")
     if ibnet_code == 0:
         for line in ibnet_output.splitlines():
-            # Procura a linha que conecta o Adaptador de Canal (CA) a um Switch (SW)
             if line.startswith('Ca') and '-> SW' in line:
                 try:
-                    parts = line.split('->')
-                    switch_part = parts[1].strip()
-                    # Ex: SW  21 0x... "MF0;switch-guid"
-                    switch_info = switch_part.split('"')
-                    switch_name = switch_info[1]
+                    switch_name = line.split('"')[1]
                     switch_details = f"Conectado ao Switch: {switch_name}"
-                    break # Pega a primeira conexão encontrada
+                    break
                 except IndexError:
-                    continue # Ignora linhas mal formatadas
+                    continue
 
     final_details = f"{ib_health_details}\n{switch_details}"
     
@@ -1020,6 +1046,14 @@ def generate_html_report(all_checks, timestamp, hostname):
                 color: var(--p-color);
                 background-color: var(--p-bg-color);
             }
+            .item-suggestion {
+                margin-top: 10px;
+                padding: 10px;
+                background-color: #e9ecef;
+                border-radius: 4px;
+                font-size: 13px;
+                border-left: 3px solid #004a7f;
+            }
         </style>
     </head>
     <body>
@@ -1042,6 +1076,15 @@ def generate_html_report(all_checks, timestamp, hostname):
                 priority_info = priority_map.get(priority, {'color': '#6c757d', 'bg_color': '#e9ecef'})
                 priority_tag_html = f'<span class="priority-tag" style="--p-color: {priority_info["color"]}; --p-bg-color: {priority_info["bg_color"]};">{priority}</span>'
 
+            suggestion = get_kb_suggestion(item['details'])
+            suggestion_html = ''
+            if suggestion:
+                suggestion_html = f'''
+                <div class="item-suggestion">
+                    <strong>Sugestão:</strong> {suggestion}
+                </div>
+                '''
+
             html_content += f"""
             <div class="item" style="border-left: 5px solid {status_info['color']};">
                 <div class="item-status">{status_info['icon']}</div>
@@ -1051,6 +1094,7 @@ def generate_html_report(all_checks, timestamp, hostname):
                         {priority_tag_html}
                     </div>
                     <div class="item-details">{item['details']}</div>
+                    {suggestion_html}
                 </div>
             </div>
             """
@@ -1075,12 +1119,12 @@ def generate_test_data():
         {'category': 'Recursos de Sistema', 'item': 'Média de Carga (Load Average)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Carga (1m, 5m, 15m): 35.5, 20.1, 15.0 em 16 núcleos. A carga de 1 minuto (35.5) é alta para o número de núcleos.'},
         {'category': 'Recursos de GPU', 'item': 'GPU 0: NVIDIA A100', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Temp: 92.0°C (Limite: 85.0°C)'},
         {'category': 'Recursos de GPU', 'item': 'GPU 1: NVIDIA A100', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Temp: 65.0°C, Uso: 80.0%, Memória: 10240/40960 MB (25.0%)'},
-        {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Port 1: Estado: Active\n, Estado Físico: Down\n, Taxa: 40 Gb/s (QDR)\nConectado ao Switch: Mellanox Technologies Aggregation Switch'},
-        {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[  123.456] mce: [Hardware Error]: CPU 0: Machine Check...'},
+        {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'mlx5_0 - Port 1: Estado=Active, Físico=Down, Taxa=40 Gb/s\nConectado ao Switch: Mellanox Technologies Aggregation Switch'},
+        {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[  123.456] mce: [Hardware Error]: CPU 0: Machine Check...\nACPI Error: ...'},
         {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/sda', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'O teste de autoavaliação S.M.A.R.T. foi aprovado.'},
         {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/sdb', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': 'O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco.'},
         {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/nvme0n1', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'O teste de autoavaliação S.M.A.R.T. foi aprovado. Desgaste (90.0%) excede o limite de 85.0%.'},
-        {'category': 'Saúde da Rede', 'item': 'Interface eth0', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Erros: 102 (RX:102, TX:0), Descartados: 550 (RX:500, TX:50)'},
+        {'category': 'Saúde da Rede', 'item': 'Interface bond0', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Erros: 102 (RX:102, TX:0), Descartados: 550 (RX:500, TX:50)'},
         {'category': 'Saúde do S.O.', 'item': 'Processos Zumbis', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Encontrados 10 processos zumbis. O número excede o limite de 5.'},
         {'category': 'Saúde do S.O.', 'item': 'Tempo de Atividade (Uptime)', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'O servidor foi reiniciado nas últimas 24 horas. Tempo ativo: 04:32:15.'},
         {'category': 'Serviços Essenciais', 'item': 'Serviço: beegfs-client', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'O serviço beegfs-client está ativo e rodando.'},
