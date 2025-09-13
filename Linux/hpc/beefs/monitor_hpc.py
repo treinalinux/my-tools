@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.7
+# version......: 1.3.8
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -173,7 +173,7 @@ def check_cpu_memory():
     return cpu_result, mem_result
 
 
-def check_infiniband():
+def check_infiniband(debug_mode=False):
     """Verifica o status dos links InfiniBand e a conexão com o switch."""
     _, ibstat_code = run_command("ibstat -V")
     _, iblinkinfo_code = run_command("iblinkinfo -V")
@@ -187,10 +187,14 @@ def check_infiniband():
     overall_status = 'NORMAL'
     final_details_lines = []
     
+    if debug_mode:
+        print("\n--- MODO DE DEBUG INFINIBAND ---")
+
     ca_blocks = full_ibstat_output.split('CA \'')
     for block in ca_blocks[1:]:
         lines = block.splitlines()
         ca_name = lines[0].split('\'')[0]
+        if debug_mode: print(f"Analisando Placa: {ca_name}")
         
         port_details_map = {}
         current_port = None
@@ -198,8 +202,7 @@ def check_infiniband():
             line = line.strip()
             if line.startswith('Port '):
                 current_port = line.split(':')[0]
-                if current_port not in port_details_map:
-                    port_details_map[current_port] = {}
+                if current_port not in port_details_map: port_details_map[current_port] = {}
             elif ':' in line and current_port:
                 key, value = line.split(':', 1)
                 port_details_map[current_port][key.strip()] = value.strip()
@@ -227,13 +230,17 @@ def check_infiniband():
                 switch_connections[port_key] = '<span style="color: red;">Não conectado</span>'
 
         for port, details in sorted(port_details_map.items()):
+            if debug_mode: print(f"  - {port}:")
+            if debug_mode: print(f"    - Status (ibstat):  {details}")
+            if debug_mode: print(f"    - Conexão (iblinkinfo): {switch_connections.get(port, 'Não conectado')}")
+
             port_state = details.get('State', 'N/A')
             phys_state = details.get('Physical state', 'N/A')
             rate = details.get('Rate', 'N/A')
             link_layer = details.get('Link layer', 'InfiniBand')
             
-            # Se for uma porta Ethernet e estiver desabilitada, pule completamente.
             if link_layer == 'Ethernet' and phys_state == 'Disabled':
+                if debug_mode: print(f"    - Lógica Aplicada: IGNORANDO (Porta Ethernet desabilitada).")
                 continue
 
             connection = switch_connections.get(port, '<span style="color: red;">Não conectado</span>')
@@ -241,12 +248,13 @@ def check_infiniband():
             health_part = f"({link_layer}) Estado={port_state}, Físico={phys_state}, Taxa={rate}"
             
             is_problem = False
-            # Lógica de cores e status
             if port_state == 'Active' and phys_state == 'LinkUp':
                 health_part_colored = f'<span style="color: green;">{health_part}</span>'
+                if debug_mode: print(f"    - Lógica Aplicada: Porta ATIVA.")
             else:
                 is_problem = True
                 health_part_colored = f'<span style="color: red;">{health_part}</span>'
+                if debug_mode: print(f"    - Lógica Aplicada: PROBLEMA DETECTADO.")
 
             if is_problem:
                 overall_status = 'ATENÇÃO'
@@ -254,12 +262,19 @@ def check_infiniband():
             final_details_lines.append(f"{ca_name} - {port}: {health_part_colored} -> {connection}")
 
     if not final_details_lines:
-        return None # Nenhuma porta relevante encontrada, não gere um item no relatório
+        if debug_mode: print("Nenhuma porta InfiniBand/Ethernet relevante encontrada para relatar.")
+        return None
 
     final_details = "\n".join(final_details_lines)
-
     priority = 'P1 (Crítica)' if overall_status == 'FALHA' else ('P2 (Alta)' if overall_status == 'ATENÇÃO' else 'P4 (Informativa)')
-    return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
+    
+    result = {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
+    
+    if debug_mode:
+        print(f"\nResultado final a ser enviado para o relatório:\n{result}")
+        print("---------------------------------")
+        
+    return result
 
 def check_system_errors():
     """Verifica o log do kernel (dmesg) em busca de erros de hardware."""
@@ -419,7 +434,12 @@ def generate_html_report(all_checks, timestamp, hostname, knowledge_base):
 
 def parse_cli_args():
     """Analisa os argumentos da linha de comando."""
-    args = {'test_html': '--test-html' in sys.argv, 'force_html': '--force-html' in sys.argv, 'smart_disks': []}
+    args = {
+        'test_html': '--test-html' in sys.argv,
+        'force_html': '--force-html' in sys.argv,
+        'smart_disks': [],
+        'debug_ib': '--debug-ib' in sys.argv
+    }
     if '--smart-disks' in sys.argv:
         try:
             index = sys.argv.index('--smart-disks')
@@ -453,7 +473,7 @@ def main():
     all_checks.append(check_load_average())
     all_checks.extend(check_gpus())
     
-    ib_check = check_infiniband()
+    ib_check = check_infiniband(debug_mode=args['debug_ib'])
     if ib_check:
         all_checks.append(ib_check)
 
@@ -477,7 +497,8 @@ def main():
     
     has_issues = any(check.get('status') in ['ATENÇÃO', 'FALHA'] for check in all_checks)
     if has_issues or args['force_html']:
-        print("Problemas detectados ou geração forçada. Gerando relatório HTML...")
+        if not args['debug_ib']: # Não imprima esta mensagem se estiver em modo de depuração
+            print("Problemas detectados ou geração forçada. Gerando relatório HTML...")
         generate_html_report(all_checks, timestamp, hostname, knowledge_base)
     else:
         print("Nenhum problema detectado.")
