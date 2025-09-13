@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.6
+# version......: 1.1.0
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -16,6 +16,7 @@ import datetime
 import csv
 import sys
 import time
+import json
 
 # --- CONFIGURAÇÕES ---
 # Defina os limites para CPU e Memória para considerar "ATENÇÃO"
@@ -53,35 +54,33 @@ SERVICES_TO_CHECK = [
 # Lista de interfaces de rede a serem ignoradas na verificação de erros
 INTERFACES_TO_IGNORE = ['lo', 'virbr']
 
-# Caminhos para os arquivos de saída
+# --- CAMINHOS PARA OS ARQUIVOS ---
+# Assume que o script, a pasta 'data' e a pasta 'templates' estão no mesmo diretório
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 OUTPUT_DIR = os.path.join(os.path.expanduser('~'), 'hpc_monitoring')
 CSV_LOG_FILE = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv')
 HTML_REPORT_FILE = os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
+KB_FILE = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json')
+TEMPLATE_FILE = os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
+
 
 # Palavras-chave para procurar em logs do sistema (ex: dmesg)
 HARDWARE_ERROR_KEYWORDS = ['error', 'fail', 'critical', 'fatal', 'segfault']
 
-# --- BASE DE CONHECIMENTO PARA SUGESTÕES DE RESOLUÇÃO ---
-KNOWLEDGE_BASE = {
-    # dmesg
-    'ACPI Error': 'Sugestão: Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.',
-    'failed to assign': 'Sugestão: Falha ao alocar recursos de PCI. Pode ser um problema de compatibilidade de hardware ou BIOS. Tente atualizar o firmware ou verificar as configurações de PCI no BIOS.',
-    'xpmem: module verification failed': 'Sugestão: Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.',
-    'bnxt_en': 'Sugestão: Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados.',
-    # InfiniBand
-    'Físico=Down': 'Sugestão: O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.',
-    'Estado=Down': 'Sugestão: O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.',
-    # Rede Ethernet
-    'Interface bond': 'Sugestão: Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`.',
-    # S.M.A.R.T.
-    'FAILED': 'Sugestão: O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.',
-    'Desgaste': 'Sugestão: O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.',
-    # Serviços
-    'inativo ou em estado de falha': 'Sugestão: O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha.'
-}
-
 
 # --- FUNÇÕES AUXILIARES ---
+
+def load_knowledge_base():
+    """Carrega a base de conhecimento de um arquivo JSON."""
+    if not os.path.exists(KB_FILE):
+        print(f"AVISO: Arquivo da base de conhecimento '{KB_FILE}' não encontrado.")
+        return {}
+    try:
+        with open(KB_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        print(f"ERRO: Falha ao decodificar o arquivo JSON da base de conhecimento '{KB_FILE}'.")
+        return {}
 
 def format_bytes(size_kb):
     """Converte kilobytes para um formato legível (KB, MB, GB, TB)."""
@@ -96,11 +95,13 @@ def format_bytes(size_kb):
         i += 1
     return f"{size:.1f} {size_names[i]}"
 
-def get_kb_suggestion(details):
+def get_kb_suggestion(details, knowledge_base):
     """Procura por palavras-chave nos detalhes e retorna uma sugestão da base de conhecimento."""
-    for keyword, suggestion in KNOWLEDGE_BASE.items():
-        if keyword in details:
-            return suggestion
+    # Itera sobre todas as categorias e suas entradas na base de conhecimento
+    for category in knowledge_base.values():
+        for keyword, suggestion in category.items():
+            if keyword in details:
+                return suggestion
     return None
 
 
@@ -996,8 +997,16 @@ def log_to_csv(all_checks, timestamp):
                 check.get('details', 'N/A')
             ])
 
-def generate_html_report(all_checks, timestamp, hostname):
+def generate_html_report(all_checks, timestamp, hostname, knowledge_base):
     """Gera um relatório HTML com base nos resultados das verificações."""
+    # ... (O restante da função permanece o mesmo, lendo o template e preenchendo)
+    try:
+        with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
+            template = f.read()
+    except FileNotFoundError:
+        print(f"ERRO: Arquivo de template '{TEMPLATE_FILE}' não encontrado.")
+        return
+
     status_map = {
         'NORMAL': {'icon': '✅', 'color': '#28a745'},
         'ATENÇÃO': {'icon': '⚠️', 'color': '#ffc107'},
@@ -1019,56 +1028,10 @@ def generate_html_report(all_checks, timestamp, hostname):
             grouped_checks[category] = []
         grouped_checks[category].append(check)
 
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Relatório de Status do Cluster HPC</title>
-        <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px; color: #333; }
-            .container { max-width: 900px; margin: auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden; }
-            header { background-color: #004a7f; color: white; padding: 20px; text-align: center; }
-            header h1 { margin: 0; font-size: 24px; }
-            header p { margin: 5px 0 0; opacity: 0.9; }
-            .category { margin: 20px; }
-            .category h2 { border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px; font-size: 20px; color: #004a7f; }
-            .item { display: flex; align-items: flex-start; border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 10px; background: #fafafa; }
-            .item-status { font-size: 28px; margin-right: 15px; }
-            .item-content { flex-grow: 1; }
-            .item-title { font-weight: bold; font-size: 16px; display: flex; align-items: center; }
-            .item-details { font-size: 14px; color: #666; white-space: pre-wrap; word-wrap: break-word; }
-            .priority-tag {
-                font-size: 12px;
-                font-weight: bold;
-                padding: 3px 8px;
-                border-radius: 12px;
-                margin-left: 10px;
-                color: var(--p-color);
-                background-color: var(--p-bg-color);
-            }
-            .item-suggestion {
-                margin-top: 10px;
-                padding: 10px;
-                background-color: #e9ecef;
-                border-radius: 4px;
-                font-size: 13px;
-                border-left: 3px solid #004a7f;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <header>
-                <h1>Relatório de Status do Cluster HPC</h1>
-                <p>Servidor: """ + hostname + """</p>
-                <p>Gerado em: """ + timestamp + """</p>
-            </header>
-    """
-
+    # Gera o HTML para as categorias e itens
+    content_html = ""
     for category, items in sorted(grouped_checks.items()):
-        html_content += f'<div class="category"><h2>{category}</h2>'
+        content_html += f'<div class="category"><h2>{category}</h2>'
         for item in sorted(items, key=lambda x: x['item']):
             status_info = status_map.get(item['status'], {'icon': '?', 'color': '#6c757d'})
             
@@ -1078,7 +1041,7 @@ def generate_html_report(all_checks, timestamp, hostname):
                 priority_info = priority_map.get(priority, {'color': '#6c757d', 'bg_color': '#e9ecef'})
                 priority_tag_html = f'<span class="priority-tag" style="--p-color: {priority_info["color"]}; --p-bg-color: {priority_info["bg_color"]};">{priority}</span>'
 
-            suggestion = get_kb_suggestion(item['details'])
+            suggestion = get_kb_suggestion(item['details'], knowledge_base)
             suggestion_html = ''
             if suggestion:
                 suggestion_html = f'''
@@ -1087,7 +1050,7 @@ def generate_html_report(all_checks, timestamp, hostname):
                 </div>
                 '''
 
-            html_content += f"""
+            content_html += f"""
             <div class="item" style="border-left: 5px solid {status_info['color']};">
                 <div class="item-status">{status_info['icon']}</div>
                 <div class="item-content">
@@ -1100,20 +1063,19 @@ def generate_html_report(all_checks, timestamp, hostname):
                 </div>
             </div>
             """
-        html_content += '</div>'
+        content_html += '</div>'
 
-
-    html_content += """
-        </div>
-    </body>
-    </html>
-    """
+    # Substitui os placeholders no template
+    final_html = template.replace('{hostname}', hostname)
+    final_html = final_html.replace('{timestamp}', timestamp)
+    final_html = final_html.replace('{content}', content_html)
 
     with open(HTML_REPORT_FILE, 'w', encoding='utf-8') as f:
-        f.write(html_content)
+        f.write(final_html)
     print(f"Relatório HTML gerado em: {HTML_REPORT_FILE}")
 
-def generate_test_data():
+
+def generate_test_data(knowledge_base):
     """Gera dados de exemplo para o relatório HTML de teste."""
     return [
         {'category': 'Recursos de Sistema', 'item': 'Uso de CPU', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Uso de 15.2%'},
@@ -1164,14 +1126,15 @@ def main():
     
     hostname, _ = run_command("hostname")
     args = parse_cli_args()
+    knowledge_base = load_knowledge_base()
     
     # Verifica se o modo de teste foi ativado
     if args['test_html']:
         print("Modo de teste: Gerando relatório HTML de exemplo...")
         setup_output_files() # Garante que o diretório de saída existe
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        test_checks = generate_test_data()
-        generate_html_report(test_checks, timestamp, hostname)
+        test_checks = generate_test_data(knowledge_base)
+        generate_html_report(test_checks, timestamp, hostname, knowledge_base)
         print("Relatório de teste gerado com sucesso.")
         return # Finaliza a execução após gerar o teste
 
@@ -1220,7 +1183,7 @@ def main():
             print("Problemas detectados. Gerando relatório HTML...")
         else: # A geração foi forçada
             print("Geração de relatório forçada via argumento. Gerando relatório HTML...")
-        generate_html_report(all_checks, timestamp, hostname)
+        generate_html_report(all_checks, timestamp, hostname, knowledge_base)
     else:
         print("Nenhum problema detectado. O relatório HTML não será gerado.")
 
@@ -1229,5 +1192,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
