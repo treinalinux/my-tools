@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.4
+# version......: 1.0.5
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -75,7 +75,9 @@ KNOWLEDGE_BASE = {
     'Interface bond': 'Sugestão: Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`.',
     # S.M.A.R.T.
     'FAILED': 'Sugestão: O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.',
-    'Desgaste': 'Sugestão: O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.'
+    'Desgaste': 'Sugestão: O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.',
+    # Serviços
+    'inativo ou em estado de falha': 'Sugestão: O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha.'
 }
 
 
