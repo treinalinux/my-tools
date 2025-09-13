@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.4.0
+# version......: 1.4.1
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -214,36 +214,30 @@ def check_infiniband(debug_mode=False):
     
     if debug_mode: print(f"Dados brutos do ibstat analisados:\n{json.dumps(all_ports_status, indent=2)}")
 
-    # Passo 2: Analisar iblinkinfo para obter conexões
+    # Passo 2: Analisar iblinkinfo -l para obter conexões locais
     all_switch_connections = {}
-    hostname, _ = run_command("hostname -s")
-    if hostname:
-        # Usa o comando grep sugerido pelo usuário para focar apenas no host local
-        link_info_output, _ = run_command(f"iblinkinfo | grep -A 2 '^CA: {hostname}'")
-        if debug_mode: print(f"\nSaída do iblinkinfo filtrada para '{hostname}':\n{link_info_output}")
+    link_info_output, _ = run_command("iblinkinfo -l")
+    if debug_mode: print(f"\nSaída do 'iblinkinfo -l':\n{link_info_output}")
+
+    ca_port_blocks = link_info_output.split('CA: ')
+    for block in ca_port_blocks[1:]:
+        lines = block.strip().splitlines()
+        if not lines: continue
         
-        current_hca_name = None
-        for line in link_info_output.splitlines():
-            if line.startswith(f"CA: {hostname}"):
-                try:
-                    current_hca_name = line.split()[2].rstrip(':') # Ex: HCA-1
-                except IndexError:
-                    current_hca_name = None
-            elif '==>' in line and '"' in line and current_hca_name:
-                try:
-                    # O GUID da porta do HCA está no início da linha
-                    hca_port_guid = line.split()[0]
-                    switch_name = line.split('"')[1]
-                    switch_port = line.split('[')[-1].split(']')[0].strip()
-                    # Agora precisamos encontrar a qual placa (mlx5_x) este GUID pertence
-                    for ca, ports in all_ports_status.items():
-                        for port_name, details in ports.items():
-                            if details.get('Port GUID', '').endswith(hca_port_guid):
-                                if ca not in all_switch_connections:
-                                    all_switch_connections[ca] = {}
-                                all_switch_connections[ca][port_name] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
-                                break
-                except IndexError: continue
+        header_parts = lines[0].split()
+        ca_name = header_parts[0]
+        port_name = f"{header_parts[1]} {header_parts[2].rstrip(':')}"
+
+        if ca_name not in all_switch_connections:
+            all_switch_connections[ca_name] = {}
+        
+        if len(lines) > 1 and '==>' in lines[1]:
+            try:
+                switch_name = lines[1].split('"')[1]
+                switch_port = lines[1].split('[')[-1].split(']')[0].strip()
+                all_switch_connections[ca_name][port_name] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
+            except IndexError:
+                all_switch_connections[ca_name][port_name] = '<span style="color: red;">Erro ao analisar conexão</span>'
     
     if debug_mode: print(f"\nConexões de switch mapeadas:\n{json.dumps(all_switch_connections, indent=2)}")
 
@@ -374,13 +368,13 @@ def find_beegfs_mounts():
                 except IndexError: continue
     return mounts
 
-def check_disk_io(): return [] # Implementação omitida por brevidade
-def check_beegfs_disk_usage(): return [] # Implementação omitida por brevidade
-def check_gpus(): return [] # Implementação omitida por brevidade
-def check_network_errors(): return [] # Implementação omitida por brevidade
-def check_load_average(): return {} # Implementação omitida por brevidade
-def check_zombie_processes(): return {} # Implementação omitida por brevidade
-def check_uptime(): return {} # Implementação omitida por brevidade
+def check_disk_io(): return []
+def check_beegfs_disk_usage(): return []
+def check_gpus(): return []
+def check_network_errors(): return []
+def check_load_average(): return {}
+def check_zombie_processes(): return {}
+def check_uptime(): return {}
 
 
 # --- FUNÇÕES DE SAÍDA E PRINCIPAL ---
@@ -520,6 +514,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
 
