@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.3.8
+# version......: 1.3.9
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -88,10 +88,10 @@ def load_json_file(file_path, file_description):
         return {} if "base de conhecimento" in file_description else []
 
 def format_bytes(size_kb):
-    """Converte kilobytes para um formato legível (KB, MB, GB, TB)."""
+    """Converte kilobytes para um formato legível (KB, MB, GB, TB, PB)."""
     if size_kb == 0:
         return "0 KB"
-    size_names = ("KB", "MB", "GB", "TB")
+    size_names = ("KB", "MB", "GB", "TB", "PB")
     i = 0
     size = float(size_kb)
     while size >= 1024 and i < len(size_names) - 1:
@@ -190,84 +190,85 @@ def check_infiniband(debug_mode=False):
     if debug_mode:
         print("\n--- MODO DE DEBUG INFINIBAND ---")
 
+    # Passo 1: Analisar ibstat para obter status de todas as portas
+    all_ports_status = {}
     ca_blocks = full_ibstat_output.split('CA \'')
     for block in ca_blocks[1:]:
         lines = block.splitlines()
         ca_name = lines[0].split('\'')[0]
-        if debug_mode: print(f"Analisando Placa: {ca_name}")
-        
-        port_details_map = {}
-        current_port = None
+        all_ports_status[ca_name] = {}
+        current_port_details = {}
+        current_port_name = None
         for line in lines[1:]:
             line = line.strip()
             if line.startswith('Port '):
-                current_port = line.split(':')[0]
-                if current_port not in port_details_map: port_details_map[current_port] = {}
-            elif ':' in line and current_port:
+                if current_port_name: # Salva os detalhes da porta anterior
+                    all_ports_status[ca_name][current_port_name] = current_port_details
+                current_port_name = line.split(':')[0]
+                current_port_details = {}
+            elif ':' in line and current_port_name:
                 key, value = line.split(':', 1)
-                port_details_map[current_port][key.strip()] = value.strip()
+                current_port_details[key.strip()] = value.strip()
+        if current_port_name: # Salva a última porta
+            all_ports_status[ca_name][current_port_name] = current_port_details
+    
+    if debug_mode: print(f"Dados brutos do ibstat analisados:\n{json.dumps(all_ports_status, indent=2)}")
 
-        link_info_output, _ = run_command(f"iblinkinfo -C {ca_name}")
-        switch_connections = {} 
-        
-        port_link_blocks = link_info_output.split(f'CA: {ca_name} Port ')
-        for port_block in port_link_blocks[1:]:
-            port_lines = port_block.strip().splitlines()
-            if not port_lines: continue
-            
-            port_num = port_lines[0].split(':')[0]
-            port_key = f"Port {port_num}"
-            
-            switch_info_line = port_lines[1] if len(port_lines) > 1 else ""
-            if '==>' in switch_info_line and '"' in switch_info_line:
-                try:
-                    switch_name = switch_info_line.split('"')[1]
-                    switch_port = switch_info_line.split('[')[-1].split(']')[0].strip()
-                    switch_connections[port_key] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
-                except IndexError:
-                    switch_connections[port_key] = '<span style="color: red;">Erro ao analisar conexão</span>'
-            else:
-                switch_connections[port_key] = '<span style="color: red;">Não conectado</span>'
+    # Passo 2: Analisar iblinkinfo para obter conexões
+    all_switch_connections = {}
+    link_info_output, _ = run_command("iblinkinfo")
+    current_ca_name = None
+    for line in link_info_output.splitlines():
+        if line.startswith('CA:'):
+            current_ca_name = line.split()[1]
+        elif '==>' in line and '"' in line and current_ca_name:
+            try:
+                port_num = line.split()[0]
+                port_key = f"Port {port_num}"
+                switch_name = line.split('"')[1]
+                switch_port = line.split('[')[-1].split(']')[0].strip()
+                if current_ca_name not in all_switch_connections:
+                    all_switch_connections[current_ca_name] = {}
+                all_switch_connections[current_ca_name][port_key] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
+            except IndexError: continue
+    
+    if debug_mode: print(f"\nConexões de switch encontradas pelo iblinkinfo:\n{json.dumps(all_switch_connections, indent=2)}")
 
-        for port, details in sorted(port_details_map.items()):
-            if debug_mode: print(f"  - {port}:")
-            if debug_mode: print(f"    - Status (ibstat):  {details}")
-            if debug_mode: print(f"    - Conexão (iblinkinfo): {switch_connections.get(port, 'Não conectado')}")
-
-            port_state = details.get('State', 'N/A')
-            phys_state = details.get('Physical state', 'N/A')
-            rate = details.get('Rate', 'N/A')
+    # Passo 3: Combinar as informações e gerar o relatório
+    for ca_name, ports in sorted(all_ports_status.items()):
+        if not ports: continue
+        if debug_mode: print(f"\nProcessando Placa: {ca_name}")
+        for port, details in sorted(ports.items()):
             link_layer = details.get('Link layer', 'InfiniBand')
+            phys_state = details.get('Physical state', 'N/A')
             
             if link_layer == 'Ethernet' and phys_state == 'Disabled':
-                if debug_mode: print(f"    - Lógica Aplicada: IGNORANDO (Porta Ethernet desabilitada).")
+                if debug_mode: print(f"  - {port}: IGNORANDO (Porta Ethernet desabilitada).")
                 continue
 
-            connection = switch_connections.get(port, '<span style="color: red;">Não conectado</span>')
+            port_state = details.get('State', 'N/A')
+            rate = details.get('Rate', 'N/A')
             
+            connection = all_switch_connections.get(ca_name, {}).get(port, '<span style="color: red;">Não conectado</span>')
             health_part = f"({link_layer}) Estado={port_state}, Físico={phys_state}, Taxa={rate}"
             
             is_problem = False
             if port_state == 'Active' and phys_state == 'LinkUp':
                 health_part_colored = f'<span style="color: green;">{health_part}</span>'
-                if debug_mode: print(f"    - Lógica Aplicada: Porta ATIVA.")
             else:
                 is_problem = True
                 health_part_colored = f'<span style="color: red;">{health_part}</span>'
-                if debug_mode: print(f"    - Lógica Aplicada: PROBLEMA DETECTADO.")
 
-            if is_problem:
-                overall_status = 'ATENÇÃO'
+            if is_problem: overall_status = 'ATENÇÃO'
             
             final_details_lines.append(f"{ca_name} - {port}: {health_part_colored} -> {connection}")
-
+    
     if not final_details_lines:
         if debug_mode: print("Nenhuma porta InfiniBand/Ethernet relevante encontrada para relatar.")
         return None
 
     final_details = "\n".join(final_details_lines)
     priority = 'P1 (Crítica)' if overall_status == 'FALHA' else ('P2 (Alta)' if overall_status == 'ATENÇÃO' else 'P4 (Informativa)')
-    
     result = {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
     
     if debug_mode:
@@ -506,4 +507,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
