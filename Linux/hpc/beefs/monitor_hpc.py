@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.0.1
+# version......: 1.0.2
 # date.........: 9/12/2025
 # github.......: github.com/treinalinux
 #
@@ -884,6 +884,50 @@ def check_zombie_processes():
             'details': f"Não foi possível converter a contagem de zumbis para número. Saída: '{output}'"
         }
 
+def check_uptime():
+    """Verifica se o servidor foi reiniciado nas últimas 24 horas."""
+    output, code = run_command("uptime -s")
+    if code != 0:
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Tempo de Atividade (Uptime)',
+            'status': 'FALHA',
+            'priority': 'P3 (Média)',
+            'details': f'Não foi possível obter o uptime do sistema. Saída: {output}'
+        }
+
+    try:
+        # O formato de saída do 'uptime -s' é 'YYYY-MM-DD HH:MM:SS'
+        boot_time = datetime.datetime.strptime(output, '%Y-%m-%d %H:%M:%S')
+        now = datetime.datetime.now()
+        uptime_delta = now - boot_time
+
+        # 24 horas em segundos = 24 * 60 * 60 = 86400
+        if uptime_delta.total_seconds() < 86400:
+            status = 'ATENÇÃO'
+            priority = 'P3 (Média)'
+            details = f'O servidor foi reiniciado nas últimas 24 horas. Tempo ativo: {str(uptime_delta).split(".")[0]}.'
+        else:
+            status = 'NORMAL'
+            priority = 'P4 (Informativa)'
+            details = f'O servidor está ativo há mais de 24 horas. Tempo ativo: {str(uptime_delta).split(".")[0]}.'
+
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Tempo de Atividade (Uptime)',
+            'status': status,
+            'priority': priority,
+            'details': details
+        }
+    except ValueError:
+        return {
+            'category': 'Saúde do S.O.',
+            'item': 'Tempo de Atividade (Uptime)',
+            'status': 'FALHA',
+            'priority': 'P3 (Média)',
+            'details': f'Não foi possível analisar a data de boot: "{output}"'
+        }
+
 # --- FUNÇÕES DE SAÍDA (LOG E RELATÓRIO) ---
 
 def setup_output_files():
@@ -1022,6 +1066,7 @@ def generate_test_data():
         {'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Disco /dev/nvme0n1', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'O teste de autoavaliação S.M.A.R.T. foi aprovado. Desgaste (90.0%) excede o limite de 85.0%.'},
         {'category': 'Saúde da Rede', 'item': 'Interface eth0', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Erros: 102 (RX:102, TX:0), Descartados: 550 (RX:500, TX:50)'},
         {'category': 'Saúde do S.O.', 'item': 'Processos Zumbis', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'Encontrados 10 processos zumbis. O número excede o limite de 5.'},
+        {'category': 'Saúde do S.O.', 'item': 'Tempo de Atividade (Uptime)', 'status': 'ATENÇÃO', 'priority': 'P3 (Média)', 'details': 'O servidor foi reiniciado nas últimas 24 horas. Tempo ativo: 04:32:15.'},
         {'category': 'Serviços Essenciais', 'item': 'Serviço: beegfs-client', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'O serviço beegfs-client está ativo e rodando.'},
         {'category': 'Serviços Essenciais', 'item': 'Serviço: mysql', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': 'O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because o control process exited with error code.'},
         {'category': 'Performance de Disco (I/O)', 'item': 'Disco sdb1 (/mnt/BeeGFS/storage)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': 'Latência de escrita de 65.7ms excede o limite. Utilização de 95.1% excede o limite.'},
@@ -1070,6 +1115,7 @@ def main():
     all_checks.append(check_system_errors())
     all_checks.extend(check_disk_health())
     all_checks.append(check_zombie_processes())
+    all_checks.append(check_uptime())
     all_checks.extend(check_services())
     all_checks.extend(check_disk_io())
     all_checks.extend(check_beegfs_disk_usage())
@@ -1096,6 +1142,5 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
 
