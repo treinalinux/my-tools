@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC - Refactored Version (with os.popen)
 # author.......: Alan da Silva Alves
-# version......: 2.7.0
+# version......: 2.7.1
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
 #
@@ -188,7 +188,9 @@ class InfinibandCheck(BaseCheck):
     def __init__(self, config: Config):
         super().__init__(config)
         self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
+    
     def _check_error_counters(self, device_name: str, port_num: str) -> List[str]:
+        # (Este método permanece o mesmo)
         counters, errors = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards'], []
         path_base = f"/sys/class/infiniband/{device_name}/ports/{port_num}/counters"
         if not os.path.isdir(path_base): return []
@@ -198,12 +200,15 @@ class InfinibandCheck(BaseCheck):
                 if value > 0: errors.append(f"{c_name.replace('_', ' ').title()}: {value}")
             except (IOError, ValueError): continue
         return errors
+
     def execute(self) -> List[Dict[str, Any]]:
         _, code = run_command("ibstat -V")
         if code != 0: return []
         output, code = run_command("ibstat")
         if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {output}")]
+        
         results = []
+        # (A lógica de parsing do ibstat permanece a mesma)
         for block in output.split('CA \'')[1:]:
             lines = block.splitlines()
             ca_name = lines[0].split('\'')[0]
@@ -234,14 +239,19 @@ class InfinibandCheck(BaseCheck):
                 elif link_layer == 'Ethernet' and (state != 'Active' or phys_state != 'LinkUp'):
                     d = f"Interface Ethernet sobre IB inativa. Estado Lógico: {state}, Estado Físico: {phys_state}, Taxa: {rate}"
                     results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
+
+        # <<< ALTERAÇÃO AQUI PARA MELHORAR O DIAGNÓSTICO >>>
         net_out, net_code = run_command("ibnetdiscover")
         if net_code == 0:
             if '-> SW' not in net_out:
-                results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "O nó não parece estar conectado a um switch InfiniBand (verificado com ibnetdiscover)."))
+                details_msg = f"O nó não parece estar conectado a um switch InfiniBand.\nSaída do ibnetdiscover:\n{net_out}"
+                results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, details_msg))
         else:
-            results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'ibnetdiscover' para verificar a topologia da malha."))
+            results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, f"Não foi possível executar 'ibnetdiscover'. Saída: {net_out}"))
+        
         if not results:
             results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, "Todas as portas InfiniBand estão ativas, sem erros e o nó está conectado à malha."))
+            
         return results
 
 class NetworkErrorCheck(BaseCheck):
