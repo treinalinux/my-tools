@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC - Refactored Version (with BCM Awareness)
 # author.......: Alan da Silva Alves
-# version......: 2.9.1
+# version......: 2.9.2
 # date.........: 14/09/2025
 # github.......: [github.com/treinalinux](https://github.com/treinalinux)
 
@@ -24,12 +24,9 @@ class Config:
     CPU_THRESHOLD_WARN, MEM_THRESHOLD_WARN, LOAD_AVERAGE_RATIO_WARN = 85.0, 85.0, 1.5
     SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
     GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN, BEEGFS_USAGE_THRESHOLD_WARN = 85.0, 90.0, 90.0
-    SERVICES_TO_CHECK: List[str] = [
-        'corosync', 'chronyd', 'dhcpd', 'named', 'cmd', 'nfs-server',
-        'beegfs-storage', 'beegfs-meta', 'beegfs-mon',
-        'grafana-server', 'influxdb', 'mysql', 'mariadb', 
-        'pacemaker', 'pcsd', 'cmdaemon'
-    ]
+    COMMON_SERVICES: List[str] = ['chronyd', 'nfs-server', 'cmdaemon', 'mysql', 'mariadb']
+    BCM_HEAD_NODE_SERVICES: List[str] = ['dhcpd', 'named', 'cmd', 'corosync', 'pacemaker', 'pcsd']
+    BCM_ACTIVE_MASTER_SERVICES: List[str] = ['grafana-server', 'influxdb', 'beegfs-mon']
     INTERFACES_TO_IGNORE = ['lo', 'virbr']
     PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
     SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -279,32 +276,48 @@ class ServicesCheck(BaseCheck):
         self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
     def execute(self) -> List[Dict[str, Any]]:
         results = []
-        services_to_verify = list(self.config.SERVICES_TO_CHECK)
-        is_bcm_node, is_bcm_master = False, False
-        if os.path.exists('/etc/cm-release'):
-            is_bcm_node = True
-            output, code = run_command("cmha status")
-            if code == 0 and output and "running in active mode" in output.splitlines()[0]:
-                is_bcm_master = True
-        services_to_ignore = []
-        if is_bcm_node:
-            services_to_ignore.extend(['pacemaker', 'pcsd', 'corosync'])
-            if not is_bcm_master: services_to_ignore.extend(['grafana-server', 'beegfs-mon', 'influxdb'])
-            role = "Master (Ativo)" if is_bcm_master else "Nó/Slave (Passivo)"
-            details = f"Ambiente Bright Cluster Manager detectado (Função: {role}). Serviços de HA e gerenciamento foram filtrados."
-            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Gerenciamento via BCM"))
-        _, pacemaker_code = run_command("systemctl is-active pacemaker")
-        if (pacemaker_code == 0) and not is_bcm_node:
-            managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
-            d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
-            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
-            services_to_ignore.extend(self.config.PACEMAKER_MANAGED_SERVICES)
-        services_to_verify = [s for s in services_to_verify if s not in services_to_ignore]
-        for service in services_to_verify:
+        services_to_verify = []
+
+        # --- NOVA LÓGICA DE DETECÇÃO DE FUNÇÃO BCM ---
+        bcm_role = "Nó Comum"
+        output, code = run_command("cmha status")
+        
+        is_bcm_head_node = code == 0 and output
+        if is_bcm_head_node:
+            first_line = output.splitlines()[0]
+            if "running in active mode" in first_line:
+                bcm_role = "BCM Master Ativo"
+            elif "running in passive mode" in first_line:
+                bcm_role = "BCM Master Passivo"
+            else:
+                bcm_role = "BCM Head Node (Estado Desconhecido)"
+                d = f"O serviço cmha está em um estado inesperado. Saída: {first_line}"
+                results.append(self._build_result(STATUS_WARN, PRIORITY_HIGH, d, item="Estado do CMHA"))
+
+        # --- CONSTRUÇÃO DINÂMICA DA LISTA DE SERVIÇOS ---
+        if bcm_role == "Nó Comum":
+            services_to_verify = list(self.config.COMMON_SERVICES)
+            _, pacemaker_code = run_command("systemctl is-active pacemaker")
+            if pacemaker_code == 0:
+                managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
+                d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
+                results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
+                services_to_verify = [s for s in services_to_verify if s not in self.config.PACEMAKER_MANAGED_SERVICES]
+        else:
+            d = f"Nó detectado como {bcm_role}. Verificando serviços específicos para esta função."
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Detecção de Função BCM"))
+            services_to_verify = list(self.config.COMMON_SERVICES) + list(self.config.BCM_HEAD_NODE_SERVICES)
+            if bcm_role == "BCM Master Ativo":
+                services_to_verify.extend(self.config.BCM_ACTIVE_MASTER_SERVICES)
+
+        # --- VERIFICAÇÃO FINAL DOS SERVIÇOS ---
+        for service in sorted(list(set(services_to_verify))):
             output, _ = run_command(f"systemctl status {service}")
             if "Loaded: not-found" in output or "could not be found" in output: continue
+            
             item_name = f'Serviço: {service}'
-            if "Active: active (running)" in output: s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
+            if "Active: active (running)" in output:
+                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
             else:
                 s, p = STATUS_FAIL, PRIORITY_CRITICAL
                 d = f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:])
