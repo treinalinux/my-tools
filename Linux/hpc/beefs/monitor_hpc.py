@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC - Refactored Version (with os.popen)
 # author.......: Alan da Silva Alves
-# version......: 2.7.4
+# version......: 2.7.5
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
 #
@@ -179,9 +179,7 @@ class GPUCheck(BaseCheck):
 
 class InfinibandCheck(BaseCheck):
     def __init__(self, config: Config):
-        super().__init__(config)
-        self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
-
+        super().__init__(config); self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
     def _check_error_counters(self, device_name: str, port_num: str) -> List[str]:
         counters, errors = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards'], []
         path_base = f"/sys/class/infiniband/{device_name}/ports/{port_num}/counters"
@@ -192,16 +190,14 @@ class InfinibandCheck(BaseCheck):
                 if value > 0: errors.append(f"{c_name.replace('_', ' ').title()}: {value}")
             except (IOError, ValueError): continue
         return errors
-
     def execute(self) -> List[Dict[str, Any]]:
-        _, code = run_command("ibstat -V")
+        _, code = run_command("ibstat -V"); 
         if code != 0: return []
-
         ibstat_output, code = run_command("ibstat")
         if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {ibstat_output}")]
-        
         results = []
         local_ports_info = {}
+        has_healthy_ib_port = False
 
         for block in ibstat_output.split('CA \'')[1:]:
             lines, ca_name = block.splitlines(), block.splitlines()[0].split('\'')[0]
@@ -213,20 +209,19 @@ class InfinibandCheck(BaseCheck):
                     if current_port not in ports: ports[current_port] = {}
                 elif ':' in line and current_port:
                     key, value = line.split(':', 1); ports[current_port][key.strip()] = value.strip()
-            
             for p_key, details in ports.items():
                 port_guid = details.get('Port GUID', 'N/A')
                 local_ports_info[port_guid] = {'ca_name': ca_name, 'port_key': p_key, 'details': details, 'connected_to': None}
                 p_num = p_key.split()[-1]
                 state, phys_state, link_layer, rate = details.get('State', 'N/A'), details.get('Physical state', 'N/A'), details.get('Link layer', 'N/A'), details.get('Rate', 'N/A')
                 item = f"{ca_name} - {p_key}"
-                
                 if link_layer == 'InfiniBand':
                     is_ok = (state == 'Active' and phys_state == 'LinkUp')
                     if not is_ok:
-                        d = f"Estado Lógico: {state} (Esperado: Active), Estado Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
+                        d = f"Estado Lógico: {state} (Esperado: Active), Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
                         results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, d, item=item))
                     else:
+                        has_healthy_ib_port = True # Encontramos uma porta IB saudável
                         errors = self._check_error_counters(ca_name, p_num)
                         if errors:
                             d = f"Link Ativo, mas com erros. Taxa: {rate}. Contadores: {', '.join(errors)}."
@@ -234,7 +229,7 @@ class InfinibandCheck(BaseCheck):
                 elif link_layer == 'Ethernet' and (state != 'Active' or phys_state != 'LinkUp'):
                     d = f"Interface Ethernet sobre IB inativa. Estado: {state}, Físico: {phys_state}, Taxa: {rate}"
                     results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
-
+        
         if any(r['status'] == STATUS_FAIL for r in results):
             return results
 
@@ -253,23 +248,27 @@ class InfinibandCheck(BaseCheck):
         connection_details, all_ports_connected = [], True
         for guid, port_info in local_ports_info.items():
             if port_info['details'].get('Link layer', 'N/A') != 'InfiniBand': continue
-            
-            # <<< LÓGICA CORRIGIDA AQUI >>>
-            if port_info['connected_to']: # Se encontrou qualquer conexão válida '==>'
+            if port_info['connected_to']:
                 switch_name = port_info['connected_to'].split('"')[0].strip()
                 connection_details.append(f"{port_info['ca_name']}/{port_info['port_key'].split()[-1]} -> {switch_name}")
-            else: # Se a porta está ativa mas não tem conexão '==>'
+            else:
                 all_ports_connected = False
                 item = f"{port_info['ca_name']} - {port_info['port_key']}"
                 results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Porta ativa mas sem conexão detectada (verificado com iblinkinfo).", item=item))
 
-        if not results and all_ports_connected:
-            details = f"Todas as portas InfiniBand estão ativas e sem erros. Conexões: {', '.join(connection_details)}."
-            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details))
-        
+        # <<< LÓGICA CORRIGIDA AQUI >>>
+        if has_healthy_ib_port and all_ports_connected and not any(r['status'] == STATUS_FAIL for r in results):
+            details = f"Todas as portas InfiniBand estão ativas e conectadas. Conexões: {', '.join(connection_details)}."
+            # Adiciona o status normal apenas se não houver outros problemas de IB já listados
+            if not any(r['category'] == self.category for r in results):
+                 results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details))
+            else: # Se já há avisos, adiciona este como informativo
+                 results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
+
+
         return results
 
-# (O resto das classes e funções permanecem exatamente as mesmas da versão anterior)
+# ... (Restante do script completo)
 class NetworkErrorCheck(BaseCheck):
     def __init__(self, config: Config):
         super().__init__(config); self.category, self.item = "Saúde da Rede", "Erros de Interface de Rede"
