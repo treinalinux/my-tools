@@ -4,7 +4,7 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC - Refactored Version (with os.popen)
 # author.......: Alan da Silva Alves
-# version......: 2.7.6
+# version......: 2.8.0
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
 
@@ -24,9 +24,9 @@ class Config:
     CPU_THRESHOLD_WARN, MEM_THRESHOLD_WARN, LOAD_AVERAGE_RATIO_WARN = 85.0, 85.0, 1.5
     SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
     GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN, BEEGFS_USAGE_THRESHOLD_WARN = 85.0, 90.0, 90.0
-    SERVICES_TO_CHECK = ['beegfs-client', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon', 'apache2']
+    SERVICES_TO_CHECK = ['corosync', 'chronyd', 'dhcpd', 'named', 'cmd', 'nfs-server', 'beegfs-storage', 'beegfs-meta', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon']
     INTERFACES_TO_IGNORE = ['lo', 'virbr']
-    PACEMAKER_MANAGED_SERVICES = ['mysql', 'mariadb', 'apache2', 'grafana-server']
+    PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
     SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
     OUTPUT_DIR = os.path.join(os.getcwd(), 'report')
     CSV_LOG_FILE, HTML_REPORT_FILE = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv'), os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
@@ -155,7 +155,7 @@ class InfinibandCheck(BaseCheck):
         if code != 0: return []
         ibstat_output, code = run_command("ibstat")
         if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {ibstat_output}")]
-        results, local_ports_info, has_healthy_ib_port = [], {}, False
+        results, local_ports_info, has_ib_ports, has_active_ib_port = [], {}, False, False
         for block in ibstat_output.split('CA \'')[1:]:
             lines, ca_name = block.splitlines(), block.splitlines()[0].split('\'')[0]
             ports, current_port = {}, None
@@ -173,19 +173,20 @@ class InfinibandCheck(BaseCheck):
                 state, phys_state, link_layer, rate = details.get('State', 'N/A'), details.get('Physical state', 'N/A'), details.get('Link layer', 'N/A'), details.get('Rate', 'N/A')
                 item = f"{ca_name} - {p_key}"
                 if link_layer == 'InfiniBand':
+                    has_ib_ports = True
                     if state == 'Active' and phys_state == 'LinkUp':
-                        has_healthy_ib_port = True
+                        has_active_ib_port = True
                         errors = self._check_error_counters(ca_name, p_num)
                         if errors:
                             d = f"Link Ativo, mas com erros. Taxa: {rate}. Contadores: {', '.join(errors)}."
                             results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
-                    else:
-                        d = f"Estado Lógico: {state} (Esperado: Active), Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
-                        results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, d, item=item))
                 elif link_layer == 'Ethernet' and (state != 'Active' or phys_state != 'LinkUp'):
                     d = f"Interface Ethernet sobre IB inativa. Estado: {state}, Físico: {phys_state}, Taxa: {rate}"
                     results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
-        if any(r['status'] == STATUS_FAIL for r in results): return results
+        if has_ib_ports and not has_active_ib_port:
+            results.append(self._build_result(STATUS_WARN, PRIORITY_INFO, "Foram detectadas placas InfiniBand, mas todas as portas estão inativas. Este pode ser o comportamento esperado para este nó."))
+            return results
+        if not has_active_ib_port: return results
         iblink_output, code = run_command("iblinkinfo")
         if code != 0: results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'iblinkinfo' para verificar as conexões.")); return results
         for line in iblink_output.splitlines():
@@ -205,12 +206,11 @@ class InfinibandCheck(BaseCheck):
                 all_ports_connected = False
                 item = f"{port_info['ca_name']} - {port_info['port_key']}"
                 results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Porta ativa mas sem conexão detectada (verificado com iblinkinfo).", item=item))
-        if has_healthy_ib_port and all_ports_connected and not any(r['status'] == STATUS_FAIL for r in results):
+        if has_active_ib_port and all_ports_connected and not any(r['status'] == STATUS_FAIL for r in results):
             details = "Todas as portas InfiniBand estão ativas, sem erros e conectadas:<br>" + "<br>".join(connection_details)
             results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
         return results
 
-# ... (Restante do script completo)
 class NetworkErrorCheck(BaseCheck):
     def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Saúde da Rede", "Erros de Interface de Rede"
     def execute(self) -> List[Dict[str, Any]]:
@@ -232,8 +232,7 @@ class NetworkErrorCheck(BaseCheck):
         return results
 
 class DiskHealthCheck(BaseCheck):
-    def __init__(self, config: Config, disks_to_check: List[str]):
-        super().__init__(config); self.category, self.disks_to_check = "Saúde dos Discos (S.M.A.R.T.)", disks_to_check
+    def __init__(self, config: Config, disks_to_check: List[str]): super().__init__(config); self.category, self.disks_to_check = "Saúde dos Discos (S.M.A.R.T.)", disks_to_check
     def execute(self) -> List[Dict[str, Any]]:
         _, code = run_command("smartctl -V")
         if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_MEDIUM, "A ferramenta 'smartctl' não foi encontrada.", item="Ferramenta smartctl")]
@@ -269,8 +268,7 @@ class DiskHealthCheck(BaseCheck):
         return warnings
 
 class ServicesCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
     def execute(self) -> List[Dict[str, Any]]:
         results = []
         _, pacemaker_code = run_command("systemctl is-active pacemaker")
@@ -284,8 +282,7 @@ class ServicesCheck(BaseCheck):
             output, _ = run_command(f"systemctl status {service}")
             if "Loaded: not-found" in output or "could not be found" in output: continue
             item_name = f'Serviço: {service}'
-            if "Active: active (running)" in output:
-                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
+            if "Active: active (running)" in output: s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
             else:
                 s, p = STATUS_FAIL, PRIORITY_CRITICAL
                 d = f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:])
@@ -293,8 +290,7 @@ class ServicesCheck(BaseCheck):
         return results
 
 class DmesgCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Hardware e S.O.", "Logs do Kernel (dmesg)"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Hardware e S.O.", "Logs do Kernel (dmesg)"
     def execute(self) -> List[Dict[str, Any]]:
         keys = '|'.join(self.config.HARDWARE_ERROR_KEYWORDS)
         out, code = run_command(f"dmesg | grep -iE '({keys})'")
@@ -304,11 +300,9 @@ class DmesgCheck(BaseCheck):
         return [self._build_result(s, p, d)]
 
 class BeeGFSDiskCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Uso de Disco BeeGFS", "Uso das Partições"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Uso de Disco BeeGFS", "Uso das Partições"
     def _find_beegfs_mounts(self) -> List[str]:
-        mounts = []
-        output, code = run_command("mount")
+        mounts, output, code = [], *run_command("mount")
         if code != 0: return mounts
         for line in output.splitlines():
             if ' on /BeeGFS' in line:
