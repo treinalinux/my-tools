@@ -4,12 +4,9 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC - Refactored Version (with os.popen)
 # author.......: Alan da Silva Alves
-# version......: 2.7.5
+# version......: 2.7.6
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
-#
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 
 import os
 import datetime
@@ -20,39 +17,24 @@ import json
 import re
 from typing import List, Dict, Any, Tuple, Optional
 
-# --- CONSTANTS ---
-STATUS_NORMAL = 'NORMAL'
-STATUS_WARN = 'ATENÇÃO'
-STATUS_FAIL = 'FALHA'
-PRIORITY_CRITICAL = 'P1 (Crítica)'
-PRIORITY_HIGH = 'P2 (Alta)'
-PRIORITY_MEDIUM = 'P3 (Média)'
-PRIORITY_INFO = 'P4 (Informativa)'
+STATUS_NORMAL, STATUS_WARN, STATUS_FAIL = 'NORMAL', 'ATENÇÃO', 'FALHA'
+PRIORITY_CRITICAL, PRIORITY_HIGH, PRIORITY_MEDIUM, PRIORITY_INFO = 'P1 (Crítica)', 'P2 (Alta)', 'P3 (Média)', 'P4 (Informativa)'
 
 class Config:
-    CPU_THRESHOLD_WARN: float = 85.0
-    MEM_THRESHOLD_WARN: float = 85.0
-    LOAD_AVERAGE_RATIO_WARN: float = 1.5
-    SSD_PERCENTAGE_USED_THRESHOLD_WARN: float = 85.0
-    SSD_TEMPERATURE_THRESHOLD_WARN: int = 70
-    GPU_TEMP_THRESHOLD_WARN: float = 85.0
-    GPU_UTIL_THRESHOLD_WARN: float = 90.0
-    BEEGFS_USAGE_THRESHOLD_WARN: float = 90.0
-    SERVICES_TO_CHECK: List[str] = ['beegfs-client', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon', 'apache2']
-    INTERFACES_TO_IGNORE: List[str] = ['lo', 'virbr']
-    PACEMAKER_MANAGED_SERVICES: List[str] = ['mysql', 'mariadb', 'apache2', 'grafana-server']
-    SCRIPT_DIR: str = os.path.dirname(os.path.realpath(__file__))
-    OUTPUT_DIR: str = os.path.join(os.getcwd(), 'report')
-    CSV_LOG_FILE: str = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv')
-    HTML_REPORT_FILE: str = os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
-    KB_FILE: str = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json')
-    TEMPLATE_FILE: str = os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
-    HARDWARE_ERROR_KEYWORDS: List[str] = ['error', 'fail', 'critical', 'fatal', 'segfault']
+    CPU_THRESHOLD_WARN, MEM_THRESHOLD_WARN, LOAD_AVERAGE_RATIO_WARN = 85.0, 85.0, 1.5
+    SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
+    GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN, BEEGFS_USAGE_THRESHOLD_WARN = 85.0, 90.0, 90.0
+    SERVICES_TO_CHECK = ['beegfs-client', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon', 'apache2']
+    INTERFACES_TO_IGNORE = ['lo', 'virbr']
+    PACEMAKER_MANAGED_SERVICES = ['mysql', 'mariadb', 'apache2', 'grafana-server']
+    SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+    OUTPUT_DIR = os.path.join(os.getcwd(), 'report')
+    CSV_LOG_FILE, HTML_REPORT_FILE = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv'), os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
+    KB_FILE, TEMPLATE_FILE = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json'), os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
+    HARDWARE_ERROR_KEYWORDS = ['error', 'fail', 'critical', 'fatal', 'segfault']
 
 def run_command(command: str) -> Tuple[str, int]:
-    pipe = os.popen(f'LC_ALL=C {command} 2>&1')
-    output = pipe.read().strip()
-    exit_status = pipe.close()
+    pipe = os.popen(f'LC_ALL=C {command} 2>&1'); output = pipe.read().strip(); exit_status = pipe.close()
     code = 0
     if exit_status is not None:
         if os.WIFEXITED(exit_status): code = os.WEXITSTATUS(exit_status)
@@ -63,9 +45,7 @@ def format_bytes(size_kb: float) -> str:
     if size_kb == 0: return "0 KB"
     size_names = ("KB", "MB", "GB", "TB", "PB", "EB", "ZB")
     i, size = 0, float(size_kb)
-    while size >= 1024 and i < len(size_names) - 1:
-        size /= 1024.0
-        i += 1
+    while size >= 1024 and i < len(size_names) - 1: size /= 1024.0; i += 1
     return f"{size:.1f} {size_names[i]}"
 
 def load_knowledge_base(kb_file: str) -> Dict:
@@ -81,16 +61,12 @@ def get_kb_suggestion(details: str, knowledge_base: Dict) -> Optional[str]:
     return None
 
 class BaseCheck:
-    def __init__(self, config: Config):
-        self.config, self.category, self.item = config, "N/A", "N/A"
-    def execute(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError("Each checker must implement the 'execute' method.")
-    def _build_result(self, status: str, priority: str, details: str, item: Optional[str] = None) -> Dict[str, Any]:
-        return {'category': self.category, 'item': item or self.item, 'status': status, 'priority': priority, 'details': details}
+    def __init__(self, config: Config): self.config, self.category, self.item = config, "N/A", "N/A"
+    def execute(self) -> List[Dict[str, Any]]: raise NotImplementedError()
+    def _build_result(self, status: str, priority: str, details: str, item: Optional[str] = None) -> Dict[str, Any]: return {'category': self.category, 'item': item or self.item, 'status': status, 'priority': priority, 'details': details}
 
 class CPUCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Recursos de Sistema", "Uso de CPU"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Recursos de Sistema", "Uso de CPU"
     def _get_cpu_times(self) -> Optional[Tuple[int, int]]:
         try:
             with open('/proc/stat', 'r') as f: line = f.readline()
@@ -105,15 +81,11 @@ class CPUCheck(BaseCheck):
         if not t2: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat na segunda amostragem.")]
         delta_total, delta_idle = t2[0] - t1[0], t2[1] - t1[1]
         usage = 100.0 * (delta_total - delta_idle) / delta_total if delta_total > 0 else 0.0
-        if usage >= self.config.CPU_THRESHOLD_WARN:
-            s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Uso de {usage:.1f}% excede o limite."
-        else:
-            s, p, d = STATUS_NORMAL, PRIORITY_INFO, f"Uso de {usage:.1f}%."
+        s, p, d = (STATUS_WARN, PRIORITY_HIGH, f"Uso de {usage:.1f}% excede o limite.") if usage >= self.config.CPU_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO, f"Uso de {usage:.1f}%.")
         return [self._build_result(s, p, d)]
 
 class MemoryCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Recursos de Sistema", "Uso de Memória"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Recursos de Sistema", "Uso de Memória"
     def execute(self) -> List[Dict[str, Any]]:
         try:
             mem_info = {}
@@ -124,17 +96,12 @@ class MemoryCheck(BaseCheck):
             mem_total = mem_info['MemTotal']
             mem_used = mem_total - mem_info['MemFree'] - mem_info['Buffers'] - mem_info['Cached'] - mem_info.get('SReclaimable', 0)
             mem_usage = (mem_used / mem_total) * 100.0 if mem_total > 0 else 0.0
-            if mem_usage >= self.config.MEM_THRESHOLD_WARN:
-                s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Uso de {mem_usage:.1f}% excede o limite."
-            else:
-                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f"Uso de {mem_usage:.1f}%."
+            s, p, d = (STATUS_WARN, PRIORITY_HIGH, f"Uso de {mem_usage:.1f}% excede o limite.") if mem_usage >= self.config.MEM_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO, f"Uso de {mem_usage:.1f}%.")
             return [self._build_result(s, p, d)]
-        except (IOError, KeyError, ValueError) as e:
-            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Não foi possível ler /proc/meminfo. Erro: {e}")]
+        except (IOError, KeyError, ValueError) as e: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Não foi possível ler /proc/meminfo. Erro: {e}")]
 
 class LoadAverageCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Recursos de Sistema", "Média de Carga"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Recursos de Sistema", "Média de Carga"
     def execute(self) -> List[Dict[str, Any]]:
         try:
             with open('/proc/loadavg', 'r') as f: load_1m_str, load_5m_str, load_15m_str = f.read().split()[:3]
@@ -143,18 +110,13 @@ class LoadAverageCheck(BaseCheck):
             num_cores = int(nproc_out) if nproc_code == 0 and nproc_out.isdigit() else 1
             load_ratio = load_1m / num_cores
             d = f"Carga (1m, 5m, 15m): {load_1m_str}, {load_5m_str}, {load_15m_str} ({num_cores} núcleos)."
-            if load_ratio >= self.config.LOAD_AVERAGE_RATIO_WARN:
-                s, p = STATUS_WARN, PRIORITY_HIGH
-                d += f" Carga de 1 minuto ({load_1m}) é alta para os núcleos."
-            else:
-                s, p = STATUS_NORMAL, PRIORITY_INFO
+            s, p = (STATUS_WARN, PRIORITY_HIGH) if load_ratio >= self.config.LOAD_AVERAGE_RATIO_WARN else (STATUS_NORMAL, PRIORITY_INFO)
+            if s == STATUS_WARN: d += f" Carga de 1 minuto ({load_1m}) é alta para os núcleos."
             return [self._build_result(s, p, d)]
-        except (IOError, ValueError) as e:
-            return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível ler /proc/loadavg. Erro: {e}")]
+        except (IOError, ValueError) as e: return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível ler /proc/loadavg. Erro: {e}")]
 
 class GPUCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Recursos de GPU", "Status das GPUs"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Recursos de GPU", "Status das GPUs"
     def execute(self) -> List[Dict[str, Any]]:
         _, code = run_command("nvidia-smi -L")
         if code != 0: return []
@@ -169,17 +131,15 @@ class GPUCheck(BaseCheck):
                 mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
                 item_name = f'GPU {idx}: {name}'
                 status, warnings = STATUS_NORMAL, []
-                if temp >= self.config.GPU_TEMP_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Temp: {temp}°C (Limite: {self.config.GPU_TEMP_THRESHOLD_WARN}°C)"]
-                if util >= self.config.GPU_UTIL_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Uso: {util}% (Limite: {self.config.GPU_UTIL_THRESHOLD_WARN}%)"]
-                if status == STATUS_NORMAL: p, d = PRIORITY_INFO, f"Temp: {temp}°C, Uso: {util}%, Memória: {mem_used:.0f}/{mem_total:.0f} MB ({mem_percent:.1f}%)"
-                else: p, d = PRIORITY_HIGH, ", ".join(warnings)
+                if temp >= self.config.GPU_TEMP_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Temp: {temp}°C (limite: {self.config.GPU_TEMP_THRESHOLD_WARN}°C)"]
+                if util >= self.config.GPU_UTIL_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Uso: {util}% (limite: {self.config.GPU_UTIL_THRESHOLD_WARN}%)"]
+                p, d = (PRIORITY_HIGH, ", ".join(warnings)) if status == STATUS_WARN else (PRIORITY_INFO, f"Temp: {temp}°C, Uso: {util}%, Memória: {mem_used:.0f}/{mem_total:.0f} MB ({mem_percent:.1f}%)")
                 results.append(self._build_result(status, p, d, item=item_name))
             except (ValueError, IndexError): results.append(self._build_result(STATUS_FAIL, PRIORITY_HIGH, f'Falha ao analisar linha: "{line}"'))
         return results
 
 class InfinibandCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
     def _check_error_counters(self, device_name: str, port_num: str) -> List[str]:
         counters, errors = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards'], []
         path_base = f"/sys/class/infiniband/{device_name}/ports/{port_num}/counters"
@@ -195,10 +155,7 @@ class InfinibandCheck(BaseCheck):
         if code != 0: return []
         ibstat_output, code = run_command("ibstat")
         if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {ibstat_output}")]
-        results = []
-        local_ports_info = {}
-        has_healthy_ib_port = False
-
+        results, local_ports_info, has_healthy_ib_port = [], {}, False
         for block in ibstat_output.split('CA \'')[1:]:
             lines, ca_name = block.splitlines(), block.splitlines()[0].split('\'')[0]
             ports, current_port = {}, None
@@ -211,67 +168,51 @@ class InfinibandCheck(BaseCheck):
                     key, value = line.split(':', 1); ports[current_port][key.strip()] = value.strip()
             for p_key, details in ports.items():
                 port_guid = details.get('Port GUID', 'N/A')
-                local_ports_info[port_guid] = {'ca_name': ca_name, 'port_key': p_key, 'details': details, 'connected_to': None}
+                local_ports_info[port_guid] = {'ca_name': ca_name, 'port_key': p_key, 'details': details, 'connection': None}
                 p_num = p_key.split()[-1]
                 state, phys_state, link_layer, rate = details.get('State', 'N/A'), details.get('Physical state', 'N/A'), details.get('Link layer', 'N/A'), details.get('Rate', 'N/A')
                 item = f"{ca_name} - {p_key}"
                 if link_layer == 'InfiniBand':
-                    is_ok = (state == 'Active' and phys_state == 'LinkUp')
-                    if not is_ok:
-                        d = f"Estado Lógico: {state} (Esperado: Active), Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
-                        results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, d, item=item))
-                    else:
-                        has_healthy_ib_port = True # Encontramos uma porta IB saudável
+                    if state == 'Active' and phys_state == 'LinkUp':
+                        has_healthy_ib_port = True
                         errors = self._check_error_counters(ca_name, p_num)
                         if errors:
                             d = f"Link Ativo, mas com erros. Taxa: {rate}. Contadores: {', '.join(errors)}."
                             results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
+                    else:
+                        d = f"Estado Lógico: {state} (Esperado: Active), Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
+                        results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, d, item=item))
                 elif link_layer == 'Ethernet' and (state != 'Active' or phys_state != 'LinkUp'):
                     d = f"Interface Ethernet sobre IB inativa. Estado: {state}, Físico: {phys_state}, Taxa: {rate}"
                     results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
-        
-        if any(r['status'] == STATUS_FAIL for r in results):
-            return results
-
+        if any(r['status'] == STATUS_FAIL for r in results): return results
         iblink_output, code = run_command("iblinkinfo")
-        if code != 0:
-            results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'iblinkinfo' para verificar as conexões."))
-            return results
-
+        if code != 0: results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'iblinkinfo' para verificar as conexões.")); return results
         for line in iblink_output.splitlines():
             for guid, port_info in local_ports_info.items():
                 if guid in line and '==>' in line:
-                    match = re.search(r'==>\s+\d+\s+\d+\[\s*\]\s+"([^"]+)"', line)
-                    if match: port_info['connected_to'] = match.group(1).strip()
+                    match = re.search(r'==>\s+(\d+)\s+(\d+)\[\s*\]\s+"([^"]+)"', line)
+                    if match: port_info['connection'] = {'peer_lid': match.group(1), 'peer_port': match.group(2), 'peer_name': match.group(3).strip()}
                     break
-        
         connection_details, all_ports_connected = [], True
         for guid, port_info in local_ports_info.items():
-            if port_info['details'].get('Link layer', 'N/A') != 'InfiniBand': continue
-            if port_info['connected_to']:
-                switch_name = port_info['connected_to'].split('"')[0].strip()
-                connection_details.append(f"{port_info['ca_name']}/{port_info['port_key'].split()[-1]} -> {switch_name}")
+            details = port_info['details']
+            if details.get('Link layer', 'N/A') != 'InfiniBand' or not (details.get('State') == 'Active' and details.get('Physical state') == 'LinkUp'): continue
+            if port_info['connection']:
+                lid, rate, peer_name, peer_port = details.get('Base lid', 'N/A'), details.get('Rate', 'N/A'), port_info['connection']['peer_name'].split('"')[0].strip(), port_info['connection']['peer_port']
+                connection_details.append(f"  • {port_info['ca_name']}/{port_info['port_key'].split()[-1]} (LID: {lid}, Taxa: {rate}Gbps) -> {peer_name} (Porta: {peer_port})")
             else:
                 all_ports_connected = False
                 item = f"{port_info['ca_name']} - {port_info['port_key']}"
                 results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Porta ativa mas sem conexão detectada (verificado com iblinkinfo).", item=item))
-
-        # <<< LÓGICA CORRIGIDA AQUI >>>
         if has_healthy_ib_port and all_ports_connected and not any(r['status'] == STATUS_FAIL for r in results):
-            details = f"Todas as portas InfiniBand estão ativas e conectadas. Conexões: {', '.join(connection_details)}."
-            # Adiciona o status normal apenas se não houver outros problemas de IB já listados
-            if not any(r['category'] == self.category for r in results):
-                 results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details))
-            else: # Se já há avisos, adiciona este como informativo
-                 results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
-
-
+            details = "Todas as portas InfiniBand estão ativas, sem erros e conectadas:<br>" + "<br>".join(connection_details)
+            results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
         return results
 
 # ... (Restante do script completo)
 class NetworkErrorCheck(BaseCheck):
-    def __init__(self, config: Config):
-        super().__init__(config); self.category, self.item = "Saúde da Rede", "Erros de Interface de Rede"
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Saúde da Rede", "Erros de Interface de Rede"
     def execute(self) -> List[Dict[str, Any]]:
         try:
             with open('/proc/net/dev', 'r') as f: lines = f.readlines()[2:]
@@ -379,23 +320,20 @@ class BeeGFSDiskCheck(BaseCheck):
     def execute(self) -> List[Dict[str, Any]]:
         beegfs_mounts = self._find_beegfs_mounts()
         if not beegfs_mounts: return []
-        results = []
-        total_size_kb, total_used_kb = 0, 0
+        results, total_size_kb, total_used_kb = [], 0, 0
         for mount in beegfs_mounts:
             output, code = run_command(f"df -k {mount}")
             if code != 0 or len(output.splitlines()) < 2: continue
             try:
                 parts = output.splitlines()[1].split()
-                size_kb, used_kb, avail_kb = int(parts[1]), int(parts[2]), int(parts[3])
-                use_percent = float(parts[4].replace('%', ''))
+                size_kb, used_kb, avail_kb, use_percent = int(parts[1]), int(parts[2]), int(parts[3]), float(parts[4].replace('%', ''))
                 total_size_kb += size_kb; total_used_kb += used_kb
                 status, priority = (STATUS_WARN, PRIORITY_HIGH) if use_percent >= self.config.BEEGFS_USAGE_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO)
                 details = f"Uso: {use_percent:.1f}%. Total: {format_bytes(size_kb)}, Usado: {format_bytes(used_kb)}, Disponível: {format_bytes(avail_kb)}."
                 results.append(self._build_result(status, priority, details, item=f'Uso da Partição {mount}'))
             except (ValueError, IndexError): continue
         if total_size_kb > 0:
-            agg_usage = (total_used_kb / total_size_kb) * 100.0
-            agg_avail = total_size_kb - total_used_kb
+            agg_usage, agg_avail = (total_used_kb / total_size_kb) * 100.0, total_size_kb - total_used_kb
             status, priority = (STATUS_WARN, PRIORITY_HIGH) if agg_usage >= self.config.BEEGFS_USAGE_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO)
             details = f"Uso total: {agg_usage:.1f}%. Total: {format_bytes(total_size_kb)}, Usado: {format_bytes(total_used_kb)}, Disponível: {format_bytes(agg_avail)}."
             results.append(self._build_result(status, priority, details, item='Uso Agregado das Partições'))
