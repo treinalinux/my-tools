@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 #
 # name.........: monitor_hpc
-# description..: Monitor HPC
+# description..: Monitor HPC - Refactored Version (with os.popen)
 # author.......: Alan da Silva Alves
-# version......: 2.6.1
+# version......: 2.7.0
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
 #
@@ -36,17 +36,10 @@ class Config:
     SSD_TEMPERATURE_THRESHOLD_WARN: int = 70
     GPU_TEMP_THRESHOLD_WARN: float = 85.0
     GPU_UTIL_THRESHOLD_WARN: float = 90.0
-
-    SERVICES_TO_CHECK: List[str] = [
-        'beegfs-client', 'grafana-server', 'mysql', 'mariadb', 
-        'pacemaker', 'pcsd', 'cmdaemon', 'apache2'
-    ]
+    BEEGFS_USAGE_THRESHOLD_WARN: float = 90.0
+    SERVICES_TO_CHECK: List[str] = ['beegfs-client', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon', 'apache2']
     INTERFACES_TO_IGNORE: List[str] = ['lo', 'virbr']
-
-    PACEMAKER_MANAGED_SERVICES: List[str] = [
-        'mysql', 'mariadb', 'apache2', 'grafana-server'
-    ]
-
+    PACEMAKER_MANAGED_SERVICES: List[str] = ['mysql', 'mariadb', 'apache2', 'grafana-server']
     SCRIPT_DIR: str = os.path.dirname(os.path.realpath(__file__))
     OUTPUT_DIR: str = os.path.join(os.getcwd(), 'report')
     CSV_LOG_FILE: str = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv')
@@ -56,7 +49,7 @@ class Config:
     HARDWARE_ERROR_KEYWORDS: List[str] = ['error', 'fail', 'critical', 'fatal', 'segfault']
 
 def run_command(command: str) -> Tuple[str, int]:
-    pipe = os.popen(f'{command} 2>&1')
+    pipe = os.popen(f'LC_ALL=C {command} 2>&1')
     output = pipe.read().strip()
     exit_status = pipe.close()
     code = 0
@@ -88,8 +81,7 @@ def get_kb_suggestion(details: str, knowledge_base: Dict) -> Optional[str]:
 
 class BaseCheck:
     def __init__(self, config: Config):
-        self.config = config
-        self.category, self.item = "N/A", "N/A"
+        self.config, self.category, self.item = config, "N/A", "N/A"
     def execute(self) -> List[Dict[str, Any]]:
         raise NotImplementedError("Each checker must implement the 'execute' method.")
     def _build_result(self, status: str, priority: str, details: str, item: Optional[str] = None) -> Dict[str, Any]:
@@ -102,7 +94,7 @@ class CPUCheck(BaseCheck):
     def _get_cpu_times(self) -> Optional[Tuple[int, int]]:
         try:
             with open('/proc/stat', 'r') as f: line = f.readline()
-            parts = line.split()
+            parts, cpu_times = line.split(), []
             cpu_times = [int(p) for p in parts[1:9]]
             return sum(cpu_times), cpu_times[3]
         except (IOError, IndexError, ValueError): return None
@@ -197,8 +189,7 @@ class InfinibandCheck(BaseCheck):
         super().__init__(config)
         self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
     def _check_error_counters(self, device_name: str, port_num: str) -> List[str]:
-        counters = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards']
-        errors = []
+        counters, errors = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards'], []
         path_base = f"/sys/class/infiniband/{device_name}/ports/{port_num}/counters"
         if not os.path.isdir(path_base): return []
         for c_name in counters:
@@ -218,9 +209,9 @@ class InfinibandCheck(BaseCheck):
             ca_name = lines[0].split('\'')[0]
             ports, current_port = {}, None
             for line in lines[1:]:
-                line = line.strip()
-                if line.startswith('Port '):
-                    current_port = line.split(':')[0]
+                clean_line = line.strip()
+                if clean_line.startswith('Port ') and clean_line.endswith(':'):
+                    current_port = clean_line.split(':')[0]
                     if current_port not in ports: ports[current_port] = {}
                 elif ':' in line and current_port:
                     key, value = line.split(':', 1)
@@ -288,7 +279,7 @@ class DiskHealthCheck(BaseCheck):
             path, type_arg = disk_arg, ""
             if ':' in disk_arg: path, type_ = disk_arg.split(':', 1); type_arg = f"-d {type_}"
             item = f"Disco {path}"
-            out, _ = run_command(f"LC_ALL=C smartctl -H {type_arg} {path}")
+            out, _ = run_command(f"smartctl -H {type_arg} {path}")
             s, p, d = STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível determinar o estado S.M.A.R.T. Saída: {out}"
             if "PASSED" in out: s, p, d = STATUS_NORMAL, PRIORITY_INFO, "O teste de autoavaliação S.M.A.R.T. foi aprovado."
             elif "FAILED" in out: s, p, d = STATUS_FAIL, PRIORITY_CRITICAL, "O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco."
@@ -301,7 +292,7 @@ class DiskHealthCheck(BaseCheck):
             results.append(self._build_result(s, p, d, item=item))
         return results
     def _check_ssd_attributes(self, path: str, type_arg: str) -> List[str]:
-        out, _ = run_command(f"LC_ALL=C smartctl -A {type_arg} {path}")
+        out, _ = run_command(f"smartctl -A {type_arg} {path}")
         warnings = []
         for line in out.splitlines():
             try:
@@ -356,6 +347,47 @@ class DmesgCheck(BaseCheck):
             s, p, d = STATUS_NORMAL, PRIORITY_INFO, "Nenhum erro crítico recente encontrado no dmesg."
         return [self._build_result(s, p, d)]
 
+class BeeGFSDiskCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Uso de Disco BeeGFS", "Uso das Partições"
+    def _find_beegfs_mounts(self) -> List[str]:
+        mounts = []
+        output, code = run_command("mount")
+        if code != 0: return mounts
+        for line in output.splitlines():
+            if ' on /BeeGFS' in line:
+                try:
+                    mount_point = line.split(' on ')[1].split(' ')[0]
+                    if mount_point.startswith('/BeeGFS'): mounts.append(mount_point)
+                except IndexError: continue
+        return sorted(list(set(mounts)))
+    def execute(self) -> List[Dict[str, Any]]:
+        beegfs_mounts = self._find_beegfs_mounts()
+        if not beegfs_mounts: return []
+        results = []
+        total_size_kb, total_used_kb = 0, 0
+        for mount in beegfs_mounts:
+            output, code = run_command(f"df -k {mount}")
+            if code != 0 or len(output.splitlines()) < 2: continue
+            try:
+                parts = output.splitlines()[1].split()
+                size_kb, used_kb, avail_kb = int(parts[1]), int(parts[2]), int(parts[3])
+                use_percent = float(parts[4].replace('%', ''))
+                total_size_kb += size_kb
+                total_used_kb += used_kb
+                status, priority = (STATUS_WARN, PRIORITY_HIGH) if use_percent >= self.config.BEEGFS_USAGE_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO)
+                details = f"Uso: {use_percent:.1f}%. Total: {format_bytes(size_kb)}, Usado: {format_bytes(used_kb)}, Disponível: {format_bytes(avail_kb)}."
+                results.append(self._build_result(status, priority, details, item=f'Uso da Partição {mount}'))
+            except (ValueError, IndexError): continue
+        if total_size_kb > 0:
+            agg_usage = (total_used_kb / total_size_kb) * 100.0
+            agg_avail = total_size_kb - total_used_kb
+            status, priority = (STATUS_WARN, PRIORITY_HIGH) if agg_usage >= self.config.BEEGFS_USAGE_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO)
+            details = f"Uso total: {agg_usage:.1f}%. Total: {format_bytes(total_size_kb)}, Usado: {format_bytes(total_used_kb)}, Disponível: {format_bytes(agg_avail)}."
+            results.append(self._build_result(status, priority, details, item='Uso Agregado das Partições'))
+        return results
+
 class Monitor:
     def __init__(self, args: Dict[str, Any]):
         self.args = args
@@ -384,7 +416,8 @@ class Monitor:
         checks = [
             CPUCheck(self.config), MemoryCheck(self.config), LoadAverageCheck(self.config),
             GPUCheck(self.config), ServicesCheck(self.config), DmesgCheck(self.config),
-            NetworkErrorCheck(self.config), InfinibandCheck(self.config)
+            NetworkErrorCheck(self.config), InfinibandCheck(self.config),
+            BeeGFSDiskCheck(self.config)
         ]
         if self.args['smart_disks']:
             checks.append(DiskHealthCheck(self.config, self.args['smart_disks']))
