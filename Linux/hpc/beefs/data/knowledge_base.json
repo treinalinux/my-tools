@@ -25,3 +25,4 @@
         "beegfs-client": " Se o cliente BeeGFS estiver inativo, verifique a conectividade com os servidores de metadados e armazenamento (`ping`, `netcat`). Verifique os logs do cliente em `/var/log/beegfs-client.log`.",
         "unreachable": " Mensagens de 'unreachable' nos logs do BeeGFS indicam problemas de rede ou firewall entre o cliente e os servidores. Verifique as portas necessárias e a rota de rede."
     }
+}
