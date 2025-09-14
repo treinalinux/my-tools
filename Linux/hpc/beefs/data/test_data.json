@@ -1,44 +1,79 @@
 [
-    {
-        "category": "Recursos de Sistema",
-        "item": "Uso de CPU",
-        "status": "NORMAL",
-        "priority": "P4 (Informativa)",
-        "details": "Uso de 15.2%"
-    },
-    {
-        "category": "Recursos de Sistema",
-        "item": "Uso de Memória",
-        "status": "ATENÇÃO",
-        "priority": "P2 (Alta)",
-        "details": "Uso de 88.9% excede o limite de 85.0%"
-    },
-    {
-        "category": "Rede de Alta Performance",
-        "item": "InfiniBand Health & Topology",
-        "status": "ATENÇÃO",
-        "priority": "P2 (Alta)",
-        "details": "mlx5_0 - Port 1: Estado=Active, Físico=Down, Taxa=40 Gb/s\nConectado ao Switch: Mellanox Technologies Aggregation Switch"
-    },
-    {
-        "category": "Hardware e S.O.",
-        "item": "Logs do Kernel (dmesg)",
-        "status": "ATENÇÃO",
-        "priority": "P2 (Alta)",
-        "details": "Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[  123.456] mce: [Hardware Error]: CPU 0: Machine Check...\nACPI Error: ..."
-    },
-    {
-        "category": "Saúde dos Discos (S.M.A.R.T.)",
-        "item": "Disco /dev/sdb",
-        "status": "FALHA",
-        "priority": "P1 (Crítica)",
-        "details": "O teste de autoavaliação S.M.A.R.T. FAILED. Recomenda-se a substituição do disco."
-    },
-    {
-        "category": "Serviços Essenciais",
-        "item": "Serviço: mysql",
-        "status": "FALHA",
-        "priority": "P1 (Crítica)",
-        "details": "O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because o control process exited with error code."
-    }
+  {
+    "category": "Recursos de Sistema",
+    "item": "Uso de CPU",
+    "status": "ATENÇÃO",
+    "priority": "P2 (Alta)",
+    "details": "Uso de 92.5% excede o limite de 85.0%"
+  },
+  {
+    "category": "Recursos de Sistema",
+    "item": "Uso de Memória",
+    "status": "NORMAL",
+    "priority": "P4 (Informativa)",
+    "details": "Uso de 75.8%"
+  },
+  {
+    "category": "Recursos de Sistema",
+    "item": "Média de Carga (Load Average)",
+    "status": "ATENÇÃO",
+    "priority": "P2 (Alta)",
+    "details": "Carga (1m, 5m, 15m): 35.5, 20.1, 15.0 em 16 núcleos. A carga de 1 minuto (35.5) é alta para o número de núcleos."
+  },
+  {
+    "category": "Rede de Alta Performance",
+    "item": "mlx5_0 - Port 1",
+    "status": "FALHA",
+    "priority": "P1 (Crítica)",
+    "details": "Estado Lógico: Down (Esperado: Active), Estado Físico: LinkUp (Esperado: LinkUp), Taxa: 200 Gb/s"
+  },
+  {
+    "category": "Rede de Alta Performance",
+    "item": "mlx5_1 - Port 1",
+    "status": "FALHA",
+    "priority": "P1 (Crítica)",
+    "details": "Estado Lógico: Active (Esperado: Active), Estado Físico: Polling (Esperado: LinkUp), Taxa: 200 Gb/s"
+  },
+  {
+    "category": "Rede de Alta Performance",
+    "item": "mlx5_eth_0 - Port 1",
+    "status": "ATENÇÃO",
+    "priority": "P3 (Média)",
+    "details": "Interface Ethernet sobre IB inativa. Estado Lógico: Down, Estado Físico: Down, Taxa: 50 Gb/s"
+  },
+  {
+    "category": "Rede de Alta Performance",
+    "item": "Saúde do InfiniBand",
+    "status": "FALHA",
+    "priority": "P1 (Crítica)",
+    "details": "O nó não parece estar conectado a um switch InfiniBand (verificado com ibnetdiscover)."
+  },
+  {
+    "category": "Saúde da Rede",
+    "item": "Interface enp1s0",
+    "status": "ATENÇÃO",
+    "priority": "P3 (Média)",
+    "details": "Erros: 102 (RX:102, TX:0), Descartados: 550 (RX:500, TX:50)"
+  },
+  {
+    "category": "Serviços Essenciais",
+    "item": "Serviço: mysql",
+    "status": "FALHA",
+    "priority": "P1 (Crítica)",
+    "details": "O serviço mysql está inativo ou em estado de falha.\nDetalhes:\n...service failed because a timeout was exceeded."
+  },
+  {
+    "category": "Hardware e S.O.",
+    "item": "Logs do Kernel (dmesg)",
+    "status": "ATENÇÃO",
+    "priority": "P2 (Alta)",
+    "details": "Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n[ 123.456] mce: [Hardware Error]: CPU 0: Machine Check...\n[ 789.012] ACPI Error: ..."
+  },
+  {
+    "category": "Saúde dos Discos (S.M.A.R.T.)",
+    "item": "Disco /dev/sda",
+    "status": "FALHA",
+    "priority": "P1 (Crítica)",
+    "details": "O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco."
+  }
 ]
