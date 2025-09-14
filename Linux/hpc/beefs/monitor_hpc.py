@@ -4,8 +4,8 @@
 # name.........: monitor_hpc
 # description..: Monitor HPC
 # author.......: Alan da Silva Alves
-# version......: 1.4.1
-# date.........: 9/12/2025
+# version......: 2.6.1
+# date.........: 14/09/2025
 # github.......: github.com/treinalinux
 #
 # ---------------------------------------------------------------------------
@@ -17,501 +17,451 @@ import csv
 import sys
 import time
 import json
+from typing import List, Dict, Any, Tuple, Optional
 
-# --- CONFIGURAÇÕES ---
-# Defina os limites para CPU e Memória para considerar "ATENÇÃO"
-CPU_THRESHOLD_WARN = 85.0  # em porcentagem
-MEM_THRESHOLD_WARN = 85.0  # em porcentagem
+# --- CONSTANTS ---
+STATUS_NORMAL = 'NORMAL'
+STATUS_WARN = 'ATENÇÃO'
+STATUS_FAIL = 'FALHA'
+PRIORITY_CRITICAL = 'P1 (Crítica)'
+PRIORITY_HIGH = 'P2 (Alta)'
+PRIORITY_MEDIUM = 'P3 (Média)'
+PRIORITY_INFO = 'P4 (Informativa)'
 
-# Limites para I/O de disco
-IO_AWAIT_THRESHOLD_WARN = 50.0  # Latência de I/O em milissegundos
-IO_UTIL_THRESHOLD_WARN = 90.0   # % de utilização do disco
+class Config:
+    CPU_THRESHOLD_WARN: float = 85.0
+    MEM_THRESHOLD_WARN: float = 85.0
+    LOAD_AVERAGE_RATIO_WARN: float = 1.5
+    SSD_PERCENTAGE_USED_THRESHOLD_WARN: float = 85.0
+    SSD_TEMPERATURE_THRESHOLD_WARN: int = 70
+    GPU_TEMP_THRESHOLD_WARN: float = 85.0
+    GPU_UTIL_THRESHOLD_WARN: float = 90.0
 
-# Limite para o uso agregado de disco do BeeGFS
-BEEGFS_USAGE_THRESHOLD_WARN = 90.0 # em porcentagem
+    SERVICES_TO_CHECK: List[str] = [
+        'beegfs-client', 'grafana-server', 'mysql', 'mariadb', 
+        'pacemaker', 'pcsd', 'cmdaemon', 'apache2'
+    ]
+    INTERFACES_TO_IGNORE: List[str] = ['lo', 'virbr']
 
-# Limites específicos para saúde de SSDs (S.M.A.R.T.)
-SSD_PERCENTAGE_USED_THRESHOLD_WARN = 85.0 # % de vida útil consumida
-SSD_TEMPERATURE_THRESHOLD_WARN = 70.0     # em Celsius
+    PACEMAKER_MANAGED_SERVICES: List[str] = [
+        'mysql', 'mariadb', 'apache2', 'grafana-server'
+    ]
 
-# Limites para GPUs NVIDIA
-GPU_TEMP_THRESHOLD_WARN = 85.0      # em Celsius
-GPU_UTIL_THRESHOLD_WARN = 90.0      # em porcentagem
+    SCRIPT_DIR: str = os.path.dirname(os.path.realpath(__file__))
+    OUTPUT_DIR: str = os.path.join(os.getcwd(), 'report')
+    CSV_LOG_FILE: str = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv')
+    HTML_REPORT_FILE: str = os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
+    KB_FILE: str = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json')
+    TEMPLATE_FILE: str = os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
+    HARDWARE_ERROR_KEYWORDS: List[str] = ['error', 'fail', 'critical', 'fatal', 'segfault']
 
-# Limites para Saúde do Sistema
-LOAD_AVERAGE_RATIO_WARN = 1.5 # (load_avg / num_cores) - 1.5 significa 50% acima da capacidade total
-ZOMBIE_PROCESS_THRESHOLD_WARN = 5 # Número de processos zumbis
+def run_command(command: str) -> Tuple[str, int]:
+    pipe = os.popen(f'{command} 2>&1')
+    output = pipe.read().strip()
+    exit_status = pipe.close()
+    code = 0
+    if exit_status is not None:
+        if os.WIFEXITED(exit_status): code = os.WEXITSTATUS(exit_status)
+        else: code = 1
+    return output, code
 
-# Lista de serviços para monitorar (use os nomes exatos dos serviços no systemd)
-SERVICES_TO_CHECK = [
-    'beegfs-client',  # Exemplo para BeeGFS
-    'grafana-server', # Exemplo para Grafana
-    'mysql',          # ou 'mariadb'
-    'pacemaker',      # ou 'pcsd'
-    'cmdaemon'        # Bright Cluster Manager Daemon
-]
-
-# Lista de interfaces de rede a serem ignoradas na verificação de erros
-INTERFACES_TO_IGNORE = ['lo', 'virbr']
-
-# --- CAMINHOS PARA OS ARQUIVOS ---
-SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-LOG_DIR = os.path.join(SCRIPT_DIR, 'logs')
-REPORT_DIR = os.path.join(SCRIPT_DIR, 'report')
-
-CSV_LOG_FILE = os.path.join(LOG_DIR, 'hpc_monitoring_log.csv')
-HTML_REPORT_FILE = os.path.join(REPORT_DIR, 'hpc_status_report.html')
-KB_FILE = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json')
-TEMPLATE_FILE = os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
-TEST_DATA_FILE = os.path.join(SCRIPT_DIR, 'data', 'test_data.json')
-
-
-# Palavras-chave para procurar em logs do sistema (ex: dmesg)
-HARDWARE_ERROR_KEYWORDS = ['error', 'fail', 'critical', 'fatal', 'segfault']
-
-
-# --- FUNÇÕES AUXILIARES DE CARREGAMENTO E FORMATAÇÃO ---
-
-def load_json_file(file_path, file_description):
-    """Carrega um arquivo JSON e trata possíveis erros."""
-    if not os.path.exists(file_path):
-        print(f"AVISO: Arquivo de {file_description} '{file_path}' não encontrado.")
-        return {} if "base de conhecimento" in file_description else []
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            if not content:
-                return {} if "base de conhecimento" in file_description else []
-            return json.loads(content)
-    except json.JSONDecodeError:
-        print(f"ERRO: Falha ao decodificar o arquivo JSON de {file_description} '{file_path}'.")
-        return {} if "base de conhecimento" in file_description else []
-
-def format_bytes(size_kb):
-    """Converte kilobytes para um formato legível (KB, MB, GB, TB, PB)."""
-    if size_kb == 0:
-        return "0 KB"
-    size_names = ("KB", "MB", "GB", "TB", "PB")
-    i = 0
-    size = float(size_kb)
+def format_bytes(size_kb: float) -> str:
+    if size_kb == 0: return "0 KB"
+    size_names = ("KB", "MB", "GB", "TB", "PB", "EB", "ZB")
+    i, size = 0, float(size_kb)
     while size >= 1024 and i < len(size_names) - 1:
         size /= 1024.0
         i += 1
     return f"{size:.1f} {size_names[i]}"
 
-def get_kb_suggestion(details, knowledge_base):
-    """Procura por palavras-chave nos detalhes e retorna uma sugestão da base de conhecimento."""
+def load_knowledge_base(kb_file: str) -> Dict:
+    if not os.path.exists(kb_file): return {}
+    try:
+        with open(kb_file, 'r', encoding='utf-8') as f: return json.load(f)
+    except (json.JSONDecodeError, IOError): return {}
+
+def get_kb_suggestion(details: str, knowledge_base: Dict) -> Optional[str]:
     for category in knowledge_base.values():
         for keyword, suggestion in category.items():
-            if keyword in details:
-                return suggestion
+            if keyword.lower() in details.lower(): return suggestion
     return None
 
-def run_command(command):
-    """Executa um comando no shell usando os.popen e retorna a saída e o código de status."""
-    pipe = os.popen(f'{command} 2>&1')
-    output = pipe.read().strip()
-    exit_status = pipe.close()
-    code = 0
-    if exit_status is not None and os.WIFEXITED(exit_status):
-        code = os.WEXITSTATUS(exit_status)
-    elif exit_status is not None:
-        code = 1
-    return output, code
+class BaseCheck:
+    def __init__(self, config: Config):
+        self.config = config
+        self.category, self.item = "N/A", "N/A"
+    def execute(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError("Each checker must implement the 'execute' method.")
+    def _build_result(self, status: str, priority: str, details: str, item: Optional[str] = None) -> Dict[str, Any]:
+        return {'category': self.category, 'item': item or self.item, 'status': status, 'priority': priority, 'details': details}
 
-
-# --- FUNÇÕES DE VERIFICAÇÃO ---
-
-def get_status_level(value, warn_threshold):
-    """Retorna o nível de status com base em um valor e um limite."""
-    if value >= warn_threshold:
-        return 'ATENÇÃO', f'Uso de {value:.1f}% excede o limite de {warn_threshold}%'
-    return 'NORMAL', f'Uso de {value:.1f}%'
-
-def get_cpu_times():
-    """Lê /proc/stat e retorna os tempos totais e ociosos da CPU."""
-    with open('/proc/stat', 'r') as f:
-        line = f.readline()
-    parts = line.split()
-    cpu_times = [int(p) for p in parts[1:9]]
-    return sum(cpu_times), cpu_times[3]
-
-def check_cpu_memory():
-    """Verifica o uso de CPU e memória RAM usando arquivos nativos do /proc."""
-    # Verificação de CPU
-    try:
-        total1, idle1 = get_cpu_times()
+class CPUCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Recursos de Sistema", "Uso de CPU"
+    def _get_cpu_times(self) -> Optional[Tuple[int, int]]:
+        try:
+            with open('/proc/stat', 'r') as f: line = f.readline()
+            parts = line.split()
+            cpu_times = [int(p) for p in parts[1:9]]
+            return sum(cpu_times), cpu_times[3]
+        except (IOError, IndexError, ValueError): return None
+    def execute(self) -> List[Dict[str, Any]]:
+        t1 = self._get_cpu_times()
+        if not t1: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat.")]
         time.sleep(1)
-        total2, idle2 = get_cpu_times()
-        delta_total, delta_idle = total2 - total1, idle2 - idle1
-        cpu_usage = 100.0 * (delta_total - delta_idle) / delta_total if delta_total > 0 else 0.0
-        cpu_status, cpu_msg = get_status_level(cpu_usage, CPU_THRESHOLD_WARN)
-        cpu_priority = 'P2 (Alta)' if cpu_status == 'ATENÇÃO' else 'P4 (Informativa)'
-    except (IOError, IndexError, ValueError) as e:
-        cpu_status, cpu_msg, cpu_priority = 'FALHA', f"Erro ao ler CPU: {e}", 'P1 (Crítica)'
-
-    cpu_result = {'category': 'Recursos de Sistema', 'item': 'Uso de CPU', 'status': cpu_status, 'priority': cpu_priority, 'details': cpu_msg}
-
-    # Verificação de Memória
-    try:
-        mem_info = {}
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2: mem_info[parts[0].rstrip(':')] = int(parts[1])
-        mem_total = mem_info.get('MemTotal', 0)
-        mem_available = mem_info.get('MemAvailable', 0) 
-        mem_used = mem_total - mem_available
-        mem_usage = (mem_used / mem_total) * 100.0 if mem_total > 0 else 0.0
-        mem_status, mem_msg = get_status_level(mem_usage, MEM_THRESHOLD_WARN)
-        mem_priority = 'P2 (Alta)' if mem_status == 'ATENÇÃO' else 'P4 (Informativa)'
-    except (IOError, KeyError, ValueError) as e:
-        mem_status, mem_msg, mem_priority = 'FALHA', f"Erro ao ler Memória: {e}", 'P1 (Crítica)'
-
-    mem_result = {'category': 'Recursos de Sistema', 'item': 'Uso de Memória', 'status': mem_status, 'priority': mem_priority, 'details': mem_msg}
-    
-    return cpu_result, mem_result
-
-
-def check_infiniband(debug_mode=False):
-    """Verifica o status dos links InfiniBand e a conexão com o switch."""
-    _, ibstat_code = run_command("ibstat -V")
-    _, iblinkinfo_code = run_command("iblinkinfo -V")
-    if ibstat_code != 0 or iblinkinfo_code != 0:
-        return None
-
-    full_ibstat_output, code = run_command("ibstat")
-    if code != 0:
-        return {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Status', 'status': 'FALHA', 'priority': 'P1 (Crítica)', 'details': f"Falha ao executar 'ibstat'. Saída: {full_ibstat_output}"}
-
-    overall_status = 'NORMAL'
-    final_details_lines = []
-    
-    if debug_mode:
-        print("\n--- MODO DE DEBUG INFINIBAND ---")
-
-    # Passo 1: Analisar ibstat para obter status de todas as portas
-    all_ports_status = {}
-    ca_blocks = full_ibstat_output.split('CA \'')
-    for block in ca_blocks[1:]:
-        lines = block.splitlines()
-        ca_name = lines[0].split('\'')[0]
-        all_ports_status[ca_name] = {}
-        current_port_details = {}
-        current_port_name = None
-        for line in lines[1:]:
-            line = line.strip()
-            if line.startswith('Port '):
-                if current_port_name: # Salva os detalhes da porta anterior
-                    all_ports_status[ca_name][current_port_name] = current_port_details
-                current_port_name = line.split(':')[0]
-                current_port_details = {}
-            elif ':' in line and current_port_name:
-                key, value = line.split(':', 1)
-                current_port_details[key.strip()] = value.strip()
-        if current_port_name: # Salva a última porta
-            all_ports_status[ca_name][current_port_name] = current_port_details
-    
-    if debug_mode: print(f"Dados brutos do ibstat analisados:\n{json.dumps(all_ports_status, indent=2)}")
-
-    # Passo 2: Analisar iblinkinfo -l para obter conexões locais
-    all_switch_connections = {}
-    link_info_output, _ = run_command("iblinkinfo -l")
-    if debug_mode: print(f"\nSaída do 'iblinkinfo -l':\n{link_info_output}")
-
-    ca_port_blocks = link_info_output.split('CA: ')
-    for block in ca_port_blocks[1:]:
-        lines = block.strip().splitlines()
-        if not lines: continue
-        
-        header_parts = lines[0].split()
-        ca_name = header_parts[0]
-        port_name = f"{header_parts[1]} {header_parts[2].rstrip(':')}"
-
-        if ca_name not in all_switch_connections:
-            all_switch_connections[ca_name] = {}
-        
-        if len(lines) > 1 and '==>' in lines[1]:
-            try:
-                switch_name = lines[1].split('"')[1]
-                switch_port = lines[1].split('[')[-1].split(']')[0].strip()
-                all_switch_connections[ca_name][port_name] = f'<span style="color: green;">Conectado a: {switch_name} [Porta {switch_port}]</span>'
-            except IndexError:
-                all_switch_connections[ca_name][port_name] = '<span style="color: red;">Erro ao analisar conexão</span>'
-    
-    if debug_mode: print(f"\nConexões de switch mapeadas:\n{json.dumps(all_switch_connections, indent=2)}")
-
-    # Passo 3: Combinar as informações e gerar o relatório
-    for ca_name, ports in sorted(all_ports_status.items()):
-        if not ports: continue
-        if debug_mode: print(f"\nProcessando Placa: {ca_name}")
-        for port, details in sorted(ports.items()):
-            link_layer = details.get('Link layer', 'InfiniBand')
-            phys_state = details.get('Physical state', 'N/A')
-            
-            if link_layer == 'Ethernet' and phys_state == 'Disabled':
-                if debug_mode: print(f"  - {port}: IGNORANDO (Porta Ethernet desabilitada).")
-                continue
-
-            port_state = details.get('State', 'N/A')
-            rate = details.get('Rate', 'N/A')
-            
-            connection = all_switch_connections.get(ca_name, {}).get(port, '<span style="color: red;">Não conectado</span>')
-            health_part = f"({link_layer}) Estado={port_state}, Físico={phys_state}, Taxa={rate}"
-            
-            is_problem = False
-            if port_state == 'Active' and phys_state == 'LinkUp':
-                health_part_colored = f'<span style="color: green;">{health_part}</span>'
-            else:
-                is_problem = True
-                health_part_colored = f'<span style="color: red;">{health_part}</span>'
-
-            if is_problem: overall_status = 'ATENÇÃO'
-            
-            final_details_lines.append(f"{ca_name} - {port}: {health_part_colored} -> {connection}")
-    
-    if not final_details_lines:
-        if debug_mode: print("Nenhuma porta InfiniBand/Ethernet relevante encontrada para relatar.")
-        return None
-
-    final_details = "\n".join(final_details_lines)
-    priority = 'P1 (Crítica)' if overall_status == 'FALHA' else ('P2 (Alta)' if overall_status == 'ATENÇÃO' else 'P4 (Informativa)')
-    result = {'category': 'Rede de Alta Performance', 'item': 'InfiniBand Health & Topology', 'status': overall_status, 'priority': priority, 'details': final_details}
-    
-    if debug_mode:
-        print(f"\nResultado final a ser enviado para o relatório:\n{result}")
-        print("---------------------------------")
-        
-    return result
-
-def check_system_errors():
-    """Verifica o log do kernel (dmesg) em busca de erros de hardware."""
-    dmesg_test_output, dmesg_test_code = run_command("dmesg -T | head -n 1")
-    if dmesg_test_code != 0 and "Operation not permitted" in dmesg_test_output:
-        return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': 'Não foi possível ler o buffer do kernel. Execute o script com sudo ou verifique as permissões (sysctl kernel.dmesg_restrict).'}
-
-    grep_pattern = '|'.join(HARDWARE_ERROR_KEYWORDS)
-    command = f"dmesg -T | grep -iE '{grep_pattern}'"
-    output, code = run_command(command)
-
-    if code == 0 and output:
-        output_lines = output.splitlines()
-        details_output = "\n".join(output_lines[-20:])
-        return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'ATENÇÃO', 'priority': 'P2 (Alta)', 'details': f"Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n{details_output}"}
-    elif code > 1:
-        return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': f"Erro ao executar o grep nos logs do dmesg. Saída: {output}"}
-    
-    return {'category': 'Hardware e S.O.', 'item': 'Logs do Kernel (dmesg)', 'status': 'NORMAL', 'priority': 'P4 (Informativa)', 'details': 'Nenhum erro crítico recente encontrado no dmesg.'}
-
-def check_services():
-    """Verifica o status dos serviços, ignorando aqueles que não estão instalados."""
-    results = []
-    for service in SERVICES_TO_CHECK:
-        output, _ = run_command(f"systemctl status {service}")
-        if "Loaded: not-found" in output or "could not be found" in output:
-            continue
-        status = 'FALHA'
-        for line in output.splitlines():
-            stripped_line = line.strip()
-            if stripped_line.startswith("Active:") and "active (running)" in stripped_line:
-                status = 'NORMAL'
-                break
-        if status == 'NORMAL':
-            details, priority = f'O serviço {service} está ativo e rodando.', 'P4 (Informativa)'
+        t2 = self._get_cpu_times()
+        if not t2: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat na segunda amostragem.")]
+        delta_total, delta_idle = t2[0] - t1[0], t2[1] - t1[1]
+        usage = 100.0 * (delta_total - delta_idle) / delta_total if delta_total > 0 else 0.0
+        if usage >= self.config.CPU_THRESHOLD_WARN:
+            s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Uso de {usage:.1f}% excede o limite de {self.config.CPU_THRESHOLD_WARN}%"
         else:
-            details_lines = "\n".join(output.splitlines()[-5:])
-            details = f'O serviço {service} está inativo ou em estado de falha.\nDetalhes:\n{details_lines}'
-            priority = 'P1 (Crítica)'
-        results.append({'category': 'Serviços Essenciais', 'item': f'Serviço: {service}', 'status': status, 'priority': priority, 'details': details})
-    return results
+            s, p, d = STATUS_NORMAL, PRIORITY_INFO, f"Uso de {usage:.1f}%"
+        return [self._build_result(s, p, d)]
 
-def check_disk_health(disks_to_check):
-    """Verifica a saúde dos discos físicos fornecidos via linha de comando usando S.M.A.R.T."""
-    _, code = run_command("smartctl -V")
-    if code != 0:
-        return [{'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': 'Ferramenta smartctl', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': 'A ferramenta smartctl não foi encontrada.'}]
-    
-    results = []
-    for disk_arg in disks_to_check:
-        device_path, device_type_arg = disk_arg, ""
-        if ':' in disk_arg:
-            try:
-                device_path, device_type = disk_arg.split(':', 1)
-                device_type_arg = f"-d {device_type}"
-            except ValueError:
-                results.append({'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': f'Argumento Inválido ({disk_arg})', 'status': 'FALHA', 'priority': 'P3 (Média)', 'details': 'Formato incorreto. Use "DISCO" ou "DISCO:TIPO".'})
-                continue
-        
-        smart_output, smart_code = run_command(f"LC_ALL=C smartctl -H {device_type_arg} {device_path}")
-        status, priority, details = 'FALHA', 'P2 (Alta)', f"Não foi possível determinar o estado S.M.A.R.T. para {device_path}.\nSaída:\n{smart_output}"
+class MemoryCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Recursos de Sistema", "Uso de Memória"
+    def execute(self) -> List[Dict[str, Any]]:
+        try:
+            mem_info = {}
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2: mem_info[parts[0].rstrip(':')] = int(parts[1])
+            mem_total = mem_info['MemTotal']
+            mem_used = mem_total - mem_info['MemFree'] - mem_info['Buffers'] - mem_info['Cached'] - mem_info.get('SReclaimable', 0)
+            mem_usage = (mem_used / mem_total) * 100.0 if mem_total > 0 else 0.0
+            if mem_usage >= self.config.MEM_THRESHOLD_WARN:
+                s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Uso de {mem_usage:.1f}% excede o limite de {self.config.MEM_THRESHOLD_WARN}%"
+            else:
+                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f"Uso de {mem_usage:.1f}%"
+            return [self._build_result(s, p, d)]
+        except (IOError, KeyError, ValueError) as e:
+            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Não foi possível ler /proc/meminfo. Erro: {e}")]
 
-        if "SMART overall-health self-assessment test result: PASSED" in smart_output:
-            status, priority, details = 'NORMAL', 'P4 (Informativa)', 'O teste de autoavaliação S.M.A.R.T. foi aprovado.'
-        elif "SMART overall-health self-assessment test result: FAILED" in smart_output:
-            status, priority, details = 'FALHA', 'P1 (Crítica)', 'O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco.'
-        
-        # ... (mais lógica de análise do smartctl)
+class LoadAverageCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Recursos de Sistema", "Média de Carga (Load Average)"
+    def execute(self) -> List[Dict[str, Any]]:
+        try:
+            with open('/proc/loadavg', 'r') as f: load_1m_str, load_5m_str, load_15m_str = f.read().split()[:3]
+            load_1m = float(load_1m_str)
+            nproc_out, nproc_code = run_command("nproc")
+            num_cores = int(nproc_out) if nproc_code == 0 and nproc_out.isdigit() else 1
+            load_ratio = load_1m / num_cores
+            d = f"Carga (1m, 5m, 15m): {load_1m_str}, {load_5m_str}, {load_15m_str} em {num_cores} núcleos."
+            if load_ratio >= self.config.LOAD_AVERAGE_RATIO_WARN:
+                s, p = STATUS_WARN, PRIORITY_HIGH
+                d += f" A carga de 1 minuto ({load_1m}) é alta para o número de núcleos."
+            else:
+                s, p = STATUS_NORMAL, PRIORITY_INFO
+            return [self._build_result(s, p, d)]
+        except (IOError, ValueError) as e:
+            return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível ler /proc/loadavg. Erro: {e}")]
 
-        results.append({'category': 'Saúde dos Discos (S.M.A.R.T.)', 'item': f'Disco {device_path}', 'status': status, 'priority': priority, 'details': details})
-    return results
-
-def find_beegfs_mounts():
-    """Encontra dinamicamente os pontos de montagem que começam com /BeeGFS."""
-    mounts = []
-    output, code = run_command("mount")
-    if code == 0:
+class GPUCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Recursos de GPU", "Status das GPUs"
+    def execute(self) -> List[Dict[str, Any]]:
+        _, code = run_command("nvidia-smi -L")
+        if code != 0: return []
+        query = "index,name,temperature.gpu,utilization.gpu,memory.used,memory.total"
+        output, code = run_command(f"nvidia-smi --query-gpu={query} --format=csv,noheader,nounits")
+        if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Falha ao executar nvidia-smi. Saída: {output}")]
+        results = []
         for line in output.splitlines():
-            if ' on /BeeGFS' in line:
-                try:
-                    mount_point = line.split(' on ')[1].split(' type ')[0]
-                    if mount_point.startswith('/BeeGFS'): mounts.append(mount_point)
-                except IndexError: continue
-    return mounts
+            try:
+                idx, name, temp, util, mem_used, mem_total = [p.strip() for p in line.split(',')]
+                temp, util, mem_used, mem_total = float(temp), float(util), float(mem_used), float(mem_total)
+                mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
+                item_name = f'GPU {idx}: {name}'
+                status, warnings = STATUS_NORMAL, []
+                if temp >= self.config.GPU_TEMP_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Temp: {temp}°C (Limite: {self.config.GPU_TEMP_THRESHOLD_WARN}°C)"]
+                if util >= self.config.GPU_UTIL_THRESHOLD_WARN: status, warnings = STATUS_WARN, warnings + [f"Uso: {util}% (Limite: {self.config.GPU_UTIL_THRESHOLD_WARN}%)"]
+                if status == STATUS_NORMAL:
+                    p, d = PRIORITY_INFO, f"Temp: {temp}°C, Uso: {util}%, Memória: {mem_used:.0f}/{mem_total:.0f} MB ({mem_percent:.1f}%)"
+                else:
+                    p, d = PRIORITY_HIGH, ", ".join(warnings)
+                results.append(self._build_result(status, p, d, item=item_name))
+            except (ValueError, IndexError):
+                results.append(self._build_result(STATUS_FAIL, PRIORITY_HIGH, f'Falha ao analisar linha: "{line}"'))
+        return results
 
-def check_disk_io(): return []
-def check_beegfs_disk_usage(): return []
-def check_gpus(): return []
-def check_network_errors(): return []
-def check_load_average(): return {}
-def check_zombie_processes(): return {}
-def check_uptime(): return {}
+class InfinibandCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Rede de Alta Performance", "Saúde do InfiniBand"
+    def _check_error_counters(self, device_name: str, port_num: str) -> List[str]:
+        counters = ['symbol_error', 'link_error_recovery', 'link_downed', 'port_rcv_errors', 'port_xmit_discards']
+        errors = []
+        path_base = f"/sys/class/infiniband/{device_name}/ports/{port_num}/counters"
+        if not os.path.isdir(path_base): return []
+        for c_name in counters:
+            try:
+                with open(os.path.join(path_base, c_name), 'r') as f: value = int(f.read().strip())
+                if value > 0: errors.append(f"{c_name.replace('_', ' ').title()}: {value}")
+            except (IOError, ValueError): continue
+        return errors
+    def execute(self) -> List[Dict[str, Any]]:
+        _, code = run_command("ibstat -V")
+        if code != 0: return []
+        output, code = run_command("ibstat")
+        if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {output}")]
+        results = []
+        for block in output.split('CA \'')[1:]:
+            lines = block.splitlines()
+            ca_name = lines[0].split('\'')[0]
+            ports, current_port = {}, None
+            for line in lines[1:]:
+                line = line.strip()
+                if line.startswith('Port '):
+                    current_port = line.split(':')[0]
+                    if current_port not in ports: ports[current_port] = {}
+                elif ':' in line and current_port:
+                    key, value = line.split(':', 1)
+                    ports[current_port][key.strip()] = value.strip()
+            for p_key, details in ports.items():
+                p_num = p_key.split()[-1]
+                state, phys_state = details.get('State', 'N/A'), details.get('Physical state', 'N/A')
+                link_layer, rate = details.get('Link layer', 'N/A'), details.get('Rate', 'N/A')
+                item = f"{ca_name} - {p_key}"
+                if link_layer == 'InfiniBand':
+                    is_ok = (state == 'Active' and phys_state == 'LinkUp')
+                    if not is_ok:
+                        d = f"Estado Lógico: {state} (Esperado: Active), Estado Físico: {phys_state} (Esperado: LinkUp), Taxa: {rate}"
+                        results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, d, item=item))
+                    else:
+                        errors = self._check_error_counters(ca_name, p_num)
+                        if errors:
+                            d = f"Link Ativo, mas com erros. Taxa: {rate}. Contadores: {', '.join(errors)}."
+                            results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
+                elif link_layer == 'Ethernet' and (state != 'Active' or phys_state != 'LinkUp'):
+                    d = f"Interface Ethernet sobre IB inativa. Estado Lógico: {state}, Estado Físico: {phys_state}, Taxa: {rate}"
+                    results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
+        net_out, net_code = run_command("ibnetdiscover")
+        if net_code == 0:
+            if '-> SW' not in net_out:
+                results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "O nó não parece estar conectado a um switch InfiniBand (verificado com ibnetdiscover)."))
+        else:
+            results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'ibnetdiscover' para verificar a topologia da malha."))
+        if not results:
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, "Todas as portas InfiniBand estão ativas, sem erros e o nó está conectado à malha."))
+        return results
 
+class NetworkErrorCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Saúde da Rede", "Erros de Interface de Rede"
+    def execute(self) -> List[Dict[str, Any]]:
+        try:
+            with open('/proc/net/dev', 'r') as f: lines = f.readlines()[2:]
+        except IOError: return [self._build_result(STATUS_FAIL, PRIORITY_MEDIUM, "Não foi possível ler /proc/net/dev.")]
+        results = []
+        for line in lines:
+            try:
+                parts = line.split()
+                interface = parts[0].strip(':')
+                if any(interface.startswith(p) for p in self.config.INTERFACES_TO_IGNORE): continue
+                rx_errs, rx_drop, tx_errs, tx_drop = int(parts[3]), int(parts[4]), int(parts[11]), int(parts[12])
+                total_errors, total_drops = rx_errs + tx_errs, rx_drop + tx_drop
+                if total_errors > 0 or total_drops > 0:
+                    d = f"Erros: {total_errors} (RX:{rx_errs}, TX:{tx_errs}), Descartados: {total_drops} (RX:{rx_drop}, TX:{tx_drop})"
+                    results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=f'Interface {interface}'))
+            except (ValueError, IndexError): continue
+        if not results: results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, "Nenhum erro ou pacote descartado encontrado nas interfaces."))
+        return results
 
-# --- FUNÇÕES DE SAÍDA E PRINCIPAL ---
+class DiskHealthCheck(BaseCheck):
+    def __init__(self, config: Config, disks_to_check: List[str]):
+        super().__init__(config)
+        self.category, self.disks_to_check = "Saúde dos Discos (S.M.A.R.T.)", disks_to_check
+    def execute(self) -> List[Dict[str, Any]]:
+        _, code = run_command("smartctl -V")
+        if code != 0: return [self._build_result(STATUS_FAIL, PRIORITY_MEDIUM, "A ferramenta 'smartctl' não foi encontrada.", item="Ferramenta smartctl")]
+        results = []
+        for disk_arg in self.disks_to_check:
+            path, type_arg = disk_arg, ""
+            if ':' in disk_arg: path, type_ = disk_arg.split(':', 1); type_arg = f"-d {type_}"
+            item = f"Disco {path}"
+            out, _ = run_command(f"LC_ALL=C smartctl -H {type_arg} {path}")
+            s, p, d = STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível determinar o estado S.M.A.R.T. Saída: {out}"
+            if "PASSED" in out: s, p, d = STATUS_NORMAL, PRIORITY_INFO, "O teste de autoavaliação S.M.A.R.T. foi aprovado."
+            elif "FAILED" in out: s, p, d = STATUS_FAIL, PRIORITY_CRITICAL, "O teste de autoavaliação S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco."
+            elif "Disabled" in out: s, p, d = STATUS_WARN, PRIORITY_MEDIUM, "O suporte a S.M.A.R.T. está desativado neste dispositivo."
+            if s == STATUS_NORMAL:
+                is_ssd, _ = run_command(f"cat /sys/block/{os.path.basename(path)}/queue/rotational")
+                if is_ssd.strip() == '0':
+                    warnings = self._check_ssd_attributes(path, type_arg)
+                    if warnings: s, p, d = STATUS_WARN, PRIORITY_HIGH, d + " " + " ".join(warnings)
+            results.append(self._build_result(s, p, d, item=item))
+        return results
+    def _check_ssd_attributes(self, path: str, type_arg: str) -> List[str]:
+        out, _ = run_command(f"LC_ALL=C smartctl -A {type_arg} {path}")
+        warnings = []
+        for line in out.splitlines():
+            try:
+                if "Percentage Used" in line:
+                    used = float(line.split()[-1])
+                    if used >= self.config.SSD_PERCENTAGE_USED_THRESHOLD_WARN: warnings.append(f"Desgaste ({used}%) excede o limite.")
+                elif "Temperature_Celsius" in line:
+                    temp = int(line.split()[-1])
+                    if temp >= self.config.SSD_TEMPERATURE_THRESHOLD_WARN: warnings.append(f"Temperatura ({temp}°C) excede o limite.")
+            except (ValueError, IndexError): continue
+        return warnings
 
-def setup_output_files():
-    """Cria os diretórios de log/relatório e o cabeçalho do CSV se não existirem."""
-    os.makedirs(LOG_DIR, exist_ok=True)
-    os.makedirs(REPORT_DIR, exist_ok=True)
-    if not os.path.exists(CSV_LOG_FILE):
-        with open(CSV_LOG_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['timestamp', 'category', 'item', 'status', 'priority', 'details'])
+class ServicesCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
+    def execute(self) -> List[Dict[str, Any]]:
+        results = []
+        _, pacemaker_exit_code = run_command("systemctl is-active pacemaker")
+        is_pacemaker_active = (pacemaker_exit_code == 0)
+        if is_pacemaker_active:
+            managed_services = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
+            d = f"Pacemaker está ativo. Serviços (se presentes: {managed_services}) são gerenciados pelo cluster e sua verificação via systemd foi ignorada."
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento de Serviços via Pacemaker"))
+        for service in self.config.SERVICES_TO_CHECK:
+            if is_pacemaker_active and service in self.config.PACEMAKER_MANAGED_SERVICES:
+                continue
+            output, _ = run_command(f"systemctl status {service}")
+            if "Loaded: not-found" in output or "could not be found" in output:
+                continue
+            item_name = f'Serviço: {service}'
+            if "Active: active (running)" in output:
+                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo e rodando.'
+            else:
+                s, p = STATUS_FAIL, PRIORITY_CRITICAL
+                d = f'O serviço {service} está inativo ou em estado de falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:])
+            results.append(self._build_result(s, p, d, item=item_name))
+        return results
 
-def log_to_csv(all_checks, timestamp):
-    """Adiciona os resultados das verificações ao arquivo CSV."""
-    with open(CSV_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        for check in all_checks:
-            writer.writerow([timestamp, check.get('category', 'N/A'), check.get('item', 'N/A'), check.get('status', 'N/A'), check.get('priority', 'N/A'), check.get('details', 'N/A')])
+class DmesgCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Hardware e S.O.", "Logs do Kernel (dmesg)"
+    def execute(self) -> List[Dict[str, Any]]:
+        keys = '|'.join(self.config.HARDWARE_ERROR_KEYWORDS)
+        out, code = run_command(f"dmesg | grep -iE '({keys})'")
+        if code == 0 and out:
+            s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Encontradas possíveis falhas de hardware ou erros críticos no dmesg:\n{out}"
+        elif "Operation not permitted" in out:
+             s, p, d = STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível ler os logs do kernel. Execute com 'sudo'."
+        else:
+            s, p, d = STATUS_NORMAL, PRIORITY_INFO, "Nenhum erro crítico recente encontrado no dmesg."
+        return [self._build_result(s, p, d)]
 
-def generate_html_report(all_checks, timestamp, hostname, knowledge_base):
-    """Gera um relatório HTML com base nos resultados e em um template externo."""
-    try:
-        with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
-            template = f.read()
-    except FileNotFoundError:
-        print(f"ERRO: Arquivo de template '{TEMPLATE_FILE}' não encontrado.")
-        return
+class Monitor:
+    def __init__(self, args: Dict[str, Any]):
+        self.args = args
+        self.config = Config()
+        self.knowledge_base = load_knowledge_base(self.config.KB_FILE)
+        self.hostname, _ = run_command("hostname")
+        self.timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    def run(self):
+        print("Iniciando verificação de monitoramento do cluster HPC...")
+        self._setup_output_files()
+        if self.args['test_html']:
+            self._generate_test_report()
+            return
+        all_results = self._run_all_checks()
+        self._log_to_csv(all_results)
+        print(f"Resultados registrados em: {self.config.CSV_LOG_FILE}")
+        has_issues = any(c['status'] in [STATUS_WARN, STATUS_FAIL] for c in all_results)
+        if has_issues or self.args['force_html']:
+            if has_issues: print("Problemas detectados. Gerando relatório HTML...")
+            else: print("Geração de relatório forçada. Gerando relatório HTML...")
+            self._generate_html_report(all_results)
+        else:
+            print("Nenhum problema detectado. O relatório HTML não será gerado.")
+        print("Verificação concluída.")
+    def _run_all_checks(self) -> List[Dict[str, Any]]:
+        checks = [
+            CPUCheck(self.config), MemoryCheck(self.config), LoadAverageCheck(self.config),
+            GPUCheck(self.config), ServicesCheck(self.config), DmesgCheck(self.config),
+            NetworkErrorCheck(self.config), InfinibandCheck(self.config)
+        ]
+        if self.args['smart_disks']:
+            checks.append(DiskHealthCheck(self.config, self.args['smart_disks']))
+        results = []
+        for check in checks:
+            try:
+                res = check.execute()
+                if res: results.extend(res)
+            except Exception as e:
+                results.append({'category': check.category, 'item': check.item, 'status': STATUS_FAIL, 
+                                    'priority': PRIORITY_CRITICAL, 'details': f"Erro inesperado: {e}"})
+        return results
+    def _setup_output_files(self):
+        os.makedirs(self.config.OUTPUT_DIR, exist_ok=True)
+        if not os.path.exists(self.config.CSV_LOG_FILE):
+            with open(self.config.CSV_LOG_FILE, 'w', newline='', encoding='utf-8') as f:
+                w = csv.writer(f); w.writerow(['timestamp', 'category', 'item', 'status', 'priority', 'details'])
+    def _log_to_csv(self, all_checks: List[Dict]):
+        with open(self.config.CSV_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            for c in all_checks:
+                w.writerow([self.timestamp, c.get('category','N/A'), c.get('item','N/A'), c.get('status','N/A'), c.get('priority','N/A'), c.get('details','N/A')])
+    def _generate_html_report(self, all_checks: List[Dict]):
+        try:
+            with open(self.config.TEMPLATE_FILE, 'r', encoding='utf-8') as f: template = f.read()
+        except FileNotFoundError: print(f"ERRO: Template '{self.config.TEMPLATE_FILE}' não encontrado."); return
+        s_map = {STATUS_NORMAL: {'icon': '✅', 'color': '#28a745'}, STATUS_WARN: {'icon': '⚠️', 'color': '#ffc107'}, STATUS_FAIL: {'icon': '❌', 'color': '#dc3545'}}
+        p_map = {PRIORITY_CRITICAL: {'color': '#721c24', 'bg_color': '#f8d7da'}, PRIORITY_HIGH: {'color': '#856404', 'bg_color': '#fff3cd'},
+                 PRIORITY_MEDIUM: {'color': '#004085', 'bg_color': '#cce5ff'}, PRIORITY_INFO: {'color': '#155724', 'bg_color': '#d4edda'}}
+        grouped = {}
+        for check in all_checks: grouped.setdefault(check['category'], []).append(check)
+        html = ""
+        for cat, items in sorted(grouped.items()):
+            html += f'<div class="category"><h2>{cat}</h2>'
+            for item in sorted(items, key=lambda x: x['item']):
+                s_info = s_map.get(item['status'], {'icon': '?', 'color': '#6c757d'})
+                p, p_info = item.get('priority', PRIORITY_MEDIUM), p_map.get(item.get('priority', PRIORITY_MEDIUM))
+                p_tag = ''
+                if item['status'] != STATUS_NORMAL and p_info:
+                    p_tag = (f'<span class="priority-tag" style="--p-color: {p_info.get("color", "#6c757d")}; '
+                             f'--p-bg-color: {p_info.get("bg_color", "#e9ecef")};">{p}</span>')
+                sugg, sugg_html = get_kb_suggestion(item['details'], self.knowledge_base), ''
+                if sugg: sugg_html = f'<div class="item-suggestion"><strong>Sugestão:</strong> {sugg}</div>'
+                html += (f'<div class="item" style="border-left: 5px solid {s_info["color"]};"><div class="item-status">{s_info["icon"]}</div>'
+                         f'<div class="item-content"><div class="item-title">{item["item"]} - <span style="color: {s_info["color"]}; '
+                         f'margin-left: 4px;">{item["status"]}</span>{p_tag}</div><div class="item-details">{item["details"]}</div>{sugg_html}</div></div>')
+            html += '</div>'
+        final_html = template.replace('{hostname}', self.hostname).replace('{timestamp}', self.timestamp).replace('{content}', html)
+        with open(self.config.HTML_REPORT_FILE, 'w', encoding='utf-8') as f: f.write(final_html)
+        print(f"Relatório HTML gerado em: {self.config.HTML_REPORT_FILE}")
+    def _generate_test_report(self):
+        print("Modo de teste: Gerando relatório HTML de exemplo a partir de arquivo JSON...")
+        test_data_path = os.path.join(self.config.SCRIPT_DIR, 'data', 'test_data.json')
+        try:
+            with open(test_data_path, 'r', encoding='utf-8') as f: test_data = json.load(f)
+            self._generate_html_report(test_data)
+            print("Relatório de teste gerado com sucesso.")
+        except FileNotFoundError: print(f"ERRO: Arquivo de dados de teste não encontrado em '{test_data_path}'")
+        except json.JSONDecodeError: print(f"ERRO: Falha ao decodificar o arquivo JSON de teste em '{test_data_path}'")
 
-    content_html = ""
-    grouped_checks = {}
-    for check in all_checks:
-        if not check: continue # Pula entradas vazias ou None
-        category = check.get('category', 'Outros')
-        if category not in grouped_checks: grouped_checks[category] = []
-        grouped_checks[category].append(check)
-        
-    for category, items in sorted(grouped_checks.items()):
-        content_html += f'<div class="category"><h2>{category}</h2>'
-        for item in sorted(items, key=lambda x: x.get('item', '')):
-            status_map = {'NORMAL': ('✅', '#28a745'), 'ATENÇÃO': ('⚠️', '#ffc107'), 'FALHA': ('❌', '#dc3545')}
-            priority_map = {'P1 (Crítica)': ('#721c24', '#f8d7da'), 'P2 (Alta)': ('#856404', '#fff3cd'), 'P3 (Média)': ('#004085', '#cce5ff')}
-            icon, color = status_map.get(item.get('status'), ('?', '#6c757d'))
-            priority_tag_html, suggestion_html = '', ''
-            if item.get('status') != 'NORMAL':
-                priority = item.get('priority', 'P3 (Média)')
-                p_color, p_bg_color = priority_map.get(priority, ('#6c757d', '#e9ecef'))
-                priority_tag_html = f'<span class="priority-tag" style="--p-color: {p_color}; --p-bg-color: {p_bg_color};">{priority}</span>'
-            suggestion = get_kb_suggestion(item.get('details', ''), knowledge_base)
-            if suggestion:
-                 suggestion_html = f'<div class="item-suggestion"><strong>Sugestão:</strong> {suggestion}</div>'
-            content_html += f"""
-            <div class="item" style="border-left: 5px solid {color};">
-                <div class="item-status">{icon}</div>
-                <div class="item-content">
-                    <div class="item-title">{item.get('item')} - <span style="color: {color}; margin-left: 4px;">{item.get('status')}</span>{priority_tag_html}</div>
-                    <div class="item-details">{item.get('details')}</div>{suggestion_html}
-                </div>
-            </div>"""
-        content_html += '</div>'
-
-    final_html = template.replace('{hostname}', hostname).replace('{timestamp}', timestamp).replace('{content}', content_html)
-    with open(HTML_REPORT_FILE, 'w', encoding='utf-8') as f: f.write(final_html)
-    print(f"Relatório HTML gerado em: {HTML_REPORT_FILE}")
-
-def parse_cli_args():
-    """Analisa os argumentos da linha de comando."""
-    args = {
-        'test_html': '--test-html' in sys.argv,
-        'force_html': '--force-html' in sys.argv,
-        'smart_disks': [],
-        'debug_ib': '--debug-ib' in sys.argv
-    }
+def parse_cli_args() -> Dict[str, Any]:
+    args = {'test_html': '--test-html' in sys.argv, 'force_html': '--force-html' in sys.argv, 'smart_disks': []}
     if '--smart-disks' in sys.argv:
         try:
             index = sys.argv.index('--smart-disks')
             if len(sys.argv) > index + 1 and not sys.argv[index + 1].startswith('--'):
-                args['smart_disks'] = [d.strip() for d in sys.argv[index + 1].split(',') if d.strip()]
-        except (IndexError, ValueError): print("AVISO: Argumento --smart-disks requer uma lista de discos.")
+                disks_str = sys.argv[index + 1]
+                args['smart_disks'] = [d.strip() for d in disks_str.split(',') if d.strip()]
+            else:
+                print("AVISO: Argumento --smart-disks não foi seguido por uma lista de discos.")
+        except IndexError: pass
     return args
 
 def main():
-    """Função principal que orquestra as verificações e a geração de saídas."""
-    hostname, _ = run_command("hostname")
-    args = parse_cli_args()
-    knowledge_base = load_json_file(KB_FILE, "base de conhecimento")
-    
-    if args['test_html']:
-        print("Modo de teste: Gerando relatório HTML de exemplo...")
-        setup_output_files()
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        test_checks = load_json_file(TEST_DATA_FILE, "dados de teste")
-        generate_html_report(test_checks, timestamp, hostname, knowledge_base)
-        print("Relatório de teste gerado com sucesso.")
-        return
-
-    print("Iniciando verificação de monitoramento do cluster HPC...")
-    setup_output_files()
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    all_checks = []
-    cpu_check, mem_check = check_cpu_memory()
-    all_checks.extend([cpu_check, mem_check])
-    all_checks.append(check_load_average())
-    all_checks.extend(check_gpus())
-    
-    ib_check = check_infiniband(debug_mode=args['debug_ib'])
-    if ib_check:
-        all_checks.append(ib_check)
-
-    all_checks.extend(check_network_errors())
-    all_checks.append(check_system_errors())
-    
-    if args['smart_disks']:
-        all_checks.extend(check_disk_health(args['smart_disks']))
-
-    all_checks.append(check_zombie_processes())
-    all_checks.append(check_uptime())
-    all_checks.extend(check_services())
-    all_checks.extend(check_disk_io())
-    all_checks.extend(check_beegfs_disk_usage())
-    
-    # Filtra quaisquer resultados None que possam ter sido adicionados
-    all_checks = [check for check in all_checks if check]
-
-    log_to_csv(all_checks, timestamp)
-    print(f"Resultados registrados em: {CSV_LOG_FILE}")
-    
-    has_issues = any(check.get('status') in ['ATENÇÃO', 'FALHA'] for check in all_checks)
-    if has_issues or args['force_html']:
-        if not args['debug_ib']: # Não imprima esta mensagem se estiver em modo de depuração
-            print("Problemas detectados ou geração forçada. Gerando relatório HTML...")
-        generate_html_report(all_checks, timestamp, hostname, knowledge_base)
-    else:
-        print("Nenhum problema detectado.")
-    print("Verificação concluída.")
+    cli_args = parse_cli_args()
+    monitor = Monitor(args=cli_args)
+    monitor.run()
 
 if __name__ == '__main__':
     main()
-
