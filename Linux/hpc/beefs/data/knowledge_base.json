@@ -1,27 +1,27 @@
 {
     "dmesg": {
-        "ACPI Error": "Sugestão: Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.",
-        "failed to assign": "Sugestão: Falha ao alocar recursos de PCI. Pode ser um problema de compatibilidade de hardware ou BIOS. Tente atualizar o firmware ou verificar as configurações de PCI no BIOS.",
-        "xpmem: module verification failed": "Sugestão: Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.",
-        "bnxt_en": "Sugestão: Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados."
+        "ACPI Error": " Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.",
+        "failed to assign": " Falha ao alocar recursos de PCI. Pode ser um problema de compatibilidade de hardware ou BIOS. Tente atualizar o firmware ou verificar as configurações de PCI no BIOS.",
+        "xpmem: module verification failed": " Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.",
+        "bnxt_en": " Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados."
     },
     "infiniband": {
-        "Físico=Down": "Sugestão: O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.",
-        "Estado=Down": "Sugestão: O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.",
-        "ibstat: command not found": "Sugestão: O pacote 'ibutils' ou 'rdma-core' não está instalado. Instale-o para habilitar o monitoramento. Verifique também se os módulos do kernel (ex: `mlx5_core`) estão carregados com `lsmod`."
+        "Físico=Down": " O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.",
+        "Estado=Down": " O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.",
+        "ibstat: command not found": " O pacote 'ibutils' ou 'rdma-core' não está instalado. Instale-o para habilitar o monitoramento. Verifique também se os módulos do kernel (ex: `mlx5_core`) estão carregados com `lsmod`."
     },
     "network": {
-        "Interface bond": "Sugestão: Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`."
+        "Interface bond": " Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`."
     },
     "smart": {
-        "FAILED": "Sugestão: O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.",
-        "Desgaste": "Sugestão: O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados."
+        "FAILED": " O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.",
+        "Desgaste": " O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.",
+        "Reallocated_Sector_Ct": "O disco está realocando setores defeituosos. Monitore de perto e planeje a substituição."
     },
     "services": {
-        "inativo ou em estado de falha": "Sugestão: O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha."
+        "inativo ou em estado de falha": " O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha."
     },
     "beegfs": {
-        "beegfs-client": "Sugestão: Se o cliente BeeGFS estiver inativo, verifique a conectividade com os servidores de metadados e armazenamento (`ping`, `netcat`). Verifique os logs do cliente em `/var/log/beegfs-client.log`.",
-        "unreachable": "Sugestão: Mensagens de 'unreachable' nos logs do BeeGFS indicam problemas de rede ou firewall entre o cliente e os servidores. Verifique as portas necessárias e a rota de rede."
+        "beegfs-client": " Se o cliente BeeGFS estiver inativo, verifique a conectividade com os servidores de metadados e armazenamento (`ping`, `netcat`). Verifique os logs do cliente em `/var/log/beegfs-client.log`.",
+        "unreachable": " Mensagens de 'unreachable' nos logs do BeeGFS indicam problemas de rede ou firewall entre o cliente e os servidores. Verifique as portas necessárias e a rota de rede."
     }
-}
