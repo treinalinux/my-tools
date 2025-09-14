@@ -2,11 +2,176 @@
 # -*- coding: utf-8 -*-
 #
 # name.........: monitor_hpc
-# description..: Monitor HPC - Refactored Version (with os.popen)
+# description..: Monitor HPC - Refactored Version (with BCM Awareness)
 # author.......: Alan da Silva Alves
-# version......: 2.8.0
+# version......: 2.9.1
 # date.........: 14/09/2025
 # github.......: github.com/treinalinux
+
+import os
+import datetime
+import csv
+import sys
+import time
+import json
+import re
+from typing import List, Dict, Any, Tuple, Optional
+
+# --- CONSTANTS ---
+STATUS_NORMAL = 'NORMAL'
+STATUS_WARN = 'ATENÇÃO'
+STATUS_FAIL = 'FALHA'
+PRIORITY_CRITICAL = 'P1 (Crítica)'
+PRIORITY_HIGH = 'P2 (Alta)'
+PRIORITY_MEDIUM = 'P3 (Média)'
+PRIORITY_INFO = 'P4 (Informativa)'
+
+class Config:
+    CPU_THRESHOLD_WARN, MEM_THRESHOLD_WARN, LOAD_AVERAGE_RATIO_WARN = 85.0, 85.0, 1.5
+    SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
+    GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN, BEEGFS_USAGE_THRESHOLD_WARN = 85.0, 90.0, 90.0
+    SERVICES_TO_CHECK: List[str] = [
+        'corosync', 'chronyd', 'dhcpd', 'named', 'cmd', 'nfs-server',
+        'beegfs-storage', 'beegfs-meta', 'beegfs-mon',
+        'grafana-server', 'influxdb', 'mysql', 'mariadb', 
+        'pacemaker', 'pcsd', 'cmdaemon'
+    ]
+    INTERFACES_TO_IGNORE = ['lo', 'virbr']
+    PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
+    SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+    OUTPUT_DIR = os.path.join(os.getcwd(), 'report')
+    CSV_LOG_FILE, HTML_REPORT_FILE = os.path.join(OUTPUT_DIR, 'hpc_monitoring_log.csv'), os.path.join(OUTPUT_DIR, 'hpc_status_report.html')
+    KB_FILE, TEMPLATE_FILE = os.path.join(SCRIPT_DIR, 'data', 'knowledge_base.json'), os.path.join(SCRIPT_DIR, 'templates', 'report_template.html')
+    HARDWARE_ERROR_KEYWORDS = ['error', 'fail', 'critical', 'fatal', 'segfault']
+
+def run_command(command: str) -> Tuple[str, int]:
+    pipe = os.popen(f'LC_ALL=C {command} 2>&1'); output = pipe.read().strip(); exit_status = pipe.close()
+    code = 0
+    if exit_status is not None:
+        if os.WIFEXITED(exit_status): code = os.WEXITSTATUS(exit_status)
+        else: code = 1
+    return output, code
+
+def format_bytes(size_kb: float) -> str:
+    if size_kb == 0: return "0 KB"
+    size_names = ("KB", "MB", "GB", "TB", "PB", "EB", "ZB")
+    i, size = 0, float(size_kb)
+    while size >= 1024 and i < len(size_names) - 1: size /= 1024.0; i += 1
+    return f"{size:.1f} {size_names[i]}"
+
+def load_knowledge_base(kb_file: str) -> Dict:
+    if not os.path.exists(kb_file): return {}
+    try:
+        with open(kb_file, 'r', encoding='utf-8') as f: return json.load(f)
+    except (json.JSONDecodeError, IOError): return {}
+
+def get_kb_suggestion(details: str, knowledge_base: Dict) -> Optional[str]:
+    for category in knowledge_base.values():
+        for keyword, suggestion in category.items():
+            if keyword.lower() in details.lower(): return suggestion
+    return None
+
+class BaseCheck:
+    def __init__(self, config: Config): self.config, self.category, self.item = config, "N/A", "N/A"
+    def execute(self) -> List[Dict[str, Any]]: raise NotImplementedError()
+    def _build_result(self, status: str, priority: str, details: str, item: Optional[str] = None) -> Dict[str, Any]: return {'category': self.category, 'item': item or self.item, 'status': status, 'priority': priority, 'details': details}
+
+# (Outras classes como CPUCheck, MemoryCheck, etc., permanecem inalteradas)
+class CPUCheck(BaseCheck):
+    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Recursos de Sistema", "Uso de CPU"
+    def _get_cpu_times(self) -> Optional[Tuple[int, int]]:
+        try:
+            with open('/proc/stat', 'r') as f: line = f.readline()
+            parts, cpu_times = line.split(), [int(p) for p in line.split()[1:9]]
+            return sum(cpu_times), cpu_times[3]
+        except (IOError, IndexError, ValueError): return None
+    def execute(self) -> List[Dict[str, Any]]:
+        t1 = self._get_cpu_times()
+        if not t1: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat.")]
+        time.sleep(1)
+        t2 = self._get_cpu_times()
+        if not t2: return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat na segunda amostragem.")]
+        delta_total, delta_idle = t2[0] - t1[0], t2[1] - t1[1]
+        usage = 100.0 * (delta_total - delta_idle) / delta_total if delta_total > 0 else 0.0
+        s, p, d = (STATUS_WARN, PRIORITY_HIGH, f"Uso de {usage:.1f}% excede o limite.") if usage >= self.config.CPU_THRESHOLD_WARN else (STATUS_NORMAL, PRIORITY_INFO, f"Uso de {usage:.1f}%.")
+        return [self._build_result(s, p, d)]
+
+# ... (outras classes omitidas para brevidade) ...
+
+class ServicesCheck(BaseCheck):
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
+
+    def execute(self) -> List[Dict[str, Any]]:
+        results = []
+        services_to_verify = list(self.config.SERVICES_TO_CHECK)
+
+        # --- LÓGICA DE DETECÇÃO DO BRIGHT CLUSTER MANAGER (ATUALIZADA) ---
+        is_bcm_node = False
+        is_bcm_master = False
+        
+        if os.path.exists('/etc/cm-release'):
+            is_bcm_node = True
+            # Método mais preciso para detectar o master, conforme solicitado
+            output, code = run_command("cmha status")
+            if code == 0 and output:
+                first_line = output.splitlines()[0]
+                if "running in active mode" in first_line:
+                    is_bcm_master = True
+        
+        # --- FILTRAGEM DINÂMICA DA LISTA DE SERVIÇOS ---
+        services_to_ignore = []
+        if is_bcm_node:
+            services_to_ignore.extend(['pacemaker', 'pcsd', 'corosync'])
+            if not is_bcm_master:
+                services_to_ignore.extend(['grafana-server', 'beegfs-mon', 'influxdb'])
+            
+            role = "Master (Ativo)" if is_bcm_master else "Nó/Slave (Passivo)"
+            details = f"Ambiente Bright Cluster Manager detectado (Função: {role}). Serviços de HA e de gerenciamento específicos foram filtrados."
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Gerenciamento via BCM"))
+
+        # --- LÓGICA DO PACEMAKER (executa se não for um ambiente BCM) ---
+        _, pacemaker_code = run_command("systemctl is-active pacemaker")
+        is_pacemaker_active = (pacemaker_code == 0)
+
+        if is_pacemaker_active and not is_bcm_node:
+            managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
+            d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
+            services_to_ignore.extend(self.config.PACEMAKER_MANAGED_SERVICES)
+        
+        services_to_verify = [s for s in services_to_verify if s not in services_to_ignore]
+
+        # --- VERIFICAÇÃO FINAL DOS SERVIÇOS ---
+        for service in services_to_verify:
+            output, _ = run_command(f"systemctl status {service}")
+            if "Loaded: not-found" in output or "could not be found" in output: continue
+            
+            item_name = f'Serviço: {service}'
+            if "Active: active (running)" in output:
+                s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
+            else:
+                s, p = STATUS_FAIL, PRIORITY_CRITICAL
+                d = f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:])
+            results.append(self._build_result(s, p, d, item=item_name))
+            
+        return results
+
+# O restante do script completo está abaixo
+
+### Script `monitor_hpc.py` v2.9.1 (Completo para Substituição)
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# name.........: monitor_hpc
+# description..: Monitor HPC - Refactored Version (with BCM Awareness)
+# author.......: Alan da Silva Alves
+# version......: 2.9.1
+# date.........: 14/09/2025
+# github.......: [github.com/treinalinux](https://github.com/treinalinux)
 
 import os
 import datetime
@@ -24,7 +189,12 @@ class Config:
     CPU_THRESHOLD_WARN, MEM_THRESHOLD_WARN, LOAD_AVERAGE_RATIO_WARN = 85.0, 85.0, 1.5
     SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
     GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN, BEEGFS_USAGE_THRESHOLD_WARN = 85.0, 90.0, 90.0
-    SERVICES_TO_CHECK = ['corosync', 'chronyd', 'dhcpd', 'named', 'cmd', 'nfs-server', 'beegfs-storage', 'beegfs-meta', 'grafana-server', 'mysql', 'mariadb', 'pacemaker', 'pcsd', 'cmdaemon']
+    SERVICES_TO_CHECK: List[str] = [
+        'corosync', 'chronyd', 'dhcpd', 'named', 'cmd', 'nfs-server',
+        'beegfs-storage', 'beegfs-meta', 'beegfs-mon',
+        'grafana-server', 'influxdb', 'mysql', 'mariadb', 
+        'pacemaker', 'pcsd', 'cmdaemon'
+    ]
     INTERFACES_TO_IGNORE = ['lo', 'virbr']
     PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
     SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -208,7 +378,8 @@ class InfinibandCheck(BaseCheck):
                 results.append(self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Porta ativa mas sem conexão detectada (verificado com iblinkinfo).", item=item))
         if has_active_ib_port and all_ports_connected and not any(r['status'] == STATUS_FAIL for r in results):
             details = "Todas as portas InfiniBand estão ativas, sem erros e conectadas:<br>" + "<br>".join(connection_details)
-            results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
+            if connection_details:
+                results.insert(0, self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
         return results
 
 class NetworkErrorCheck(BaseCheck):
@@ -268,17 +439,33 @@ class DiskHealthCheck(BaseCheck):
         return warnings
 
 class ServicesCheck(BaseCheck):
-    def __init__(self, config: Config): super().__init__(config); self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category, self.item = "Serviços Essenciais", "Status dos Serviços"
     def execute(self) -> List[Dict[str, Any]]:
         results = []
+        services_to_verify = list(self.config.SERVICES_TO_CHECK)
+        is_bcm_node, is_bcm_master = False, False
+        if os.path.exists('/etc/cm-release'):
+            is_bcm_node = True
+            output, code = run_command("cmha status")
+            if code == 0 and output and "running in active mode" in output.splitlines()[0]:
+                is_bcm_master = True
+        services_to_ignore = []
+        if is_bcm_node:
+            services_to_ignore.extend(['pacemaker', 'pcsd', 'corosync'])
+            if not is_bcm_master: services_to_ignore.extend(['grafana-server', 'beegfs-mon', 'influxdb'])
+            role = "Master (Ativo)" if is_bcm_master else "Nó/Slave (Passivo)"
+            details = f"Ambiente Bright Cluster Manager detectado (Função: {role}). Serviços de HA e gerenciamento foram filtrados."
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, details, item="Gerenciamento via BCM"))
         _, pacemaker_code = run_command("systemctl is-active pacemaker")
-        is_pacemaker_active = (pacemaker_code == 0)
-        if is_pacemaker_active:
+        if (pacemaker_code == 0) and not is_bcm_node:
             managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
             d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
             results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
-        for service in self.config.SERVICES_TO_CHECK:
-            if is_pacemaker_active and service in self.config.PACEMAKER_MANAGED_SERVICES: continue
+            services_to_ignore.extend(self.config.PACEMAKER_MANAGED_SERVICES)
+        services_to_verify = [s for s in services_to_verify if s not in services_to_ignore]
+        for service in services_to_verify:
             output, _ = run_command(f"systemctl status {service}")
             if "Loaded: not-found" in output or "could not be found" in output: continue
             item_name = f'Serviço: {service}'
