@@ -1,28 +1,60 @@
 {
-    "dmesg": {
-        "ACPI Error": " Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.",
-        "failed to assign": " Falha ao alocar recursos de PCI. Pode ser um problema de compatibilidade de hardware ou BIOS. Tente atualizar o firmware ou verificar as configurações de PCI no BIOS.",
-        "xpmem: module verification failed": " Falha na verificação de assinatura de um módulo do kernel. Se o Secure Boot estiver ativo, pode ser necessário assinar o módulo ou desativar o Secure Boot.",
-        "bnxt_en": " Erro relacionado ao driver da placa de rede Broadcom (bnxt_en). Verifique se o firmware da placa de rede e o driver do kernel estão atualizados."
+    "system": {
+        "Uso de CPU": "CPU com uso elevado contínuo. Use 'top' ou 'htop' para identificar os processos que estão consumindo mais recursos e verifique se são jobs esperados ou processos anômalos.",
+        "Uso de Memória": "Memória RAM próxima do esgotamento. Use 'top' ou 'ps aux --sort=-%mem' para listar os processos que mais consomem memória. Verifique a existência de memory leaks.",
+        "Média de Carga": "Load Average alto indica que há mais processos querendo usar a CPU do que núcleos disponíveis. Verifique I/O com 'iostat' (iowait) e processos em estado 'D' (uninterruptible sleep).",
+        "reiniciado nas últimas 24 horas": "Um reinício inesperado pode indicar uma falha de hardware (energia, memória) ou um kernel panic. Verifique os logs do sistema (`journalctl -b -1`) para a sessão anterior ao reboot para encontrar a causa.",
+        "Processos Zumbis": "Um número elevado de processos zumbis geralmente indica uma aplicação mal programada que não está tratando corretamente seus processos filhos. Identifique o processo pai e reinicie-o."
+    },
+    "gpu": {
+        "Temp:": "A temperatura da GPU está acima do limite. Verifique a ventilação do chassi, a limpeza dos dissipadores e a velocidade das ventoinhas do servidor. Temperatura alta contínua pode degradar o hardware.",
+        "Uso:": "A utilização da GPU está muito alta. Embora possa ser normal para um job em execução, confirme com `nvidia-smi` qual processo/usuário está utilizando a GPU para garantir que é um uso legítimo."
     },
     "infiniband": {
-        "Físico=Down": " O link físico do InfiniBand está inativo. Verifique o cabo físico, a porta no switch e o status do switch. Use `iblinkinfo` para mais detalhes.",
-        "Estado=Down": " O estado lógico do InfiniBand está inativo. Verifique os drivers (OpenFabrics) e o serviço Subnet Manager. Use `sminfo` para diagnosticar.",
-        "ibstat: command not found": " O pacote 'ibutils' ou 'rdma-core' não está instalado. Instale-o para habilitar o monitoramento. Verifique também se os módulos do kernel (ex: `mlx5_core`) estão carregados com `lsmod`."
+        "Estado Lógico: Down": "O estado lógico da porta está inativo. Isso geralmente aponta para um problema no Subnet Manager (SM) da malha. Verifique o status do SM com 'sminfo' e o serviço 'opensm'.",
+        "Estado Físico: Down": "O link físico da porta está caído. Verifique se o cabo está bem conectado em ambas as pontas (servidor e switch) e se a porta correspondente no switch está ativa e sem falhas.",
+        "Symbol Error": "Erros de símbolo indicam um problema na camada física. Este é um alerta crítico. Inspecione ou substitua o cabo InfiniBand. Se persistir, o problema pode ser a porta do HCA ou do switch.",
+        "link_error_recovery": "O link está instável e precisou passar por recuperação. As causas são as mesmas do Symbol Error (cabo, conectores, portas). Um valor crescente indica um problema iminente.",
+        "sem conexão detectada": "A porta está ativa, mas o `iblinkinfo` não detectou um dispositivo conectado. Isso pode indicar um problema com o Subnet Manager que impede a formação da topologia. Use `sminfo` e `ibdiagnet`.",
+        "portas estão inativas": "Se este nó deveria estar na malha InfiniBand, verifique se os drivers corretos (OFED) estão instalados e se os módulos do kernel (ex: mlx5_core) estão carregados com `lsmod`."
     },
     "network": {
-        "Interface bond": " Erros em uma interface de bond podem indicar um problema em um dos links físicos membros ou uma configuração incorreta de LACP/agregação no switch. Verifique o status dos links escravos com `cat /proc/net/bonding/bondX`."
+        "Erros:": "A interface de rede está registrando erros. Isso pode ser causado por um cabo de rede defeituoso, uma porta de switch mal configurada (ex: mismatch de duplex/speed) ou um driver de rede desatualizado.",
+        "Descartados:": "Pacotes descartados geralmente indicam congestão na rede ou buffers de recebimento/transmissão insuficientes. Verifique a carga de tráfego no switch e no servidor."
     },
     "smart": {
-        "FAILED": " O teste S.M.A.R.T. FALHOU. O disco apresenta uma falha iminente e deve ser substituído o mais rápido possível.",
-        "Desgaste": " O SSD está se aproximando do fim de sua vida útil. Planeje a substituição do disco para evitar perda de dados.",
-        "Reallocated_Sector_Ct": "O disco está realocando setores defeituosos. Monitore de perto e planeje a substituição."
+        "S.M.A.R.T. FALHOU": "ALERTA CRÍTICO: O disco rígido ou SSD reportou uma falha iminente. Realize um backup imediato de todos os dados importantes e substitua o dispositivo o mais rápido possível.",
+        "Desgaste": "O SSD está se aproximando do fim de sua vida útil programada (endurance). Embora ainda funcione, a confiabilidade diminui. Planeje a substituição deste disco em breve.",
+        "Temperatura": "A temperatura do disco está acima do recomendado. Verifique a ventilação interna do servidor e a velocidade das ventoinhas para evitar falhas por superaquecimento."
     },
     "services": {
-        "inativo ou em estado de falha": " O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha."
+        "inativo ou em falha": "O serviço não está rodando. Use `systemctl status NOME_DO_SERVICO` e `journalctl -u NOME_DO_SERVICO` para investigar a causa da falha.",
+        "chronyd": "O serviço de sincronia de tempo está inativo. Isso é crítico em um cluster. Verifique a configuração em `/etc/chrony.conf` e os logs com `journalctl -u chronyd`. Use `chronyc sources` para diagnosticar a conexão com os servidores NTP.",
+        "dhcpd": "Serviço DHCP inativo. Os nós podem não conseguir obter endereços IP. Verifique a sintaxe do `/etc/dhcp/dhcpd.conf` e procure por erros nos logs (`journalctl -u dhcpd`) sobre conflitos de IP ou falta de leases.",
+        "named": "Serviço DNS inativo. A resolução de nomes no cluster pode falhar. Verifique a sintaxe do `/etc/named.conf` com `named-checkconf` e a validade das zonas com `named-checkzone`. Verifique os logs para mais detalhes.",
+        "slurmd": "O daemon do Slurm no nó de computação está inativo. O nó não receberá jobs. Verifique o `slurm.conf`, a sincronia de tempo com o mestre e os logs do `slurmd`."
+    },
+    "ha_cluster": {
+        "pacemaker": "O serviço principal do Pacemaker está inativo. O gerenciamento de recursos de alta disponibilidade está comprometido. Inicie o serviço e verifique o status do cluster com `pcs status`.",
+        "corosync": "O serviço de comunicação do cluster (Corosync) está inativo. Os nós do cluster não conseguem se comunicar, o que pode levar a um 'split-brain'. Verifique a configuração de rede e os logs.",
+        "fence": "Um erro de fencing (STONITH) foi detectado. Isso é uma condição crítica que impede o cluster de desligar um nó problemático, arriscando a integridade dos dados. Verifique a configuração do dispositivo de fence com `pcs stonith show` e sua conectividade (ex: energia, rede IPMI)."
+    },
+    "bcm": {
+        "cmdaemon": "O agente principal do Bright Cluster Manager está inativo. O nó não pode ser gerenciado pelo master. Verifique os logs em `/var/log/cmdaemon` e a conectividade com o nó master.",
+        "cmha": "O serviço de alta disponibilidade do Bright Cluster Manager (cmha) está em um estado inesperado. Conecte-se ao nó master e execute `cmha status` e `cmha logs` para um diagnóstico completo."
+    },
+    "storage": {
+        "Read-only file system": "Um filesystem foi montado como somente leitura, geralmente devido a erros graves. Verifique o `dmesg` por erros de I/O ou corrupção. Um `reboot` com checagem de disco (`fsck` ou `xfs_repair`) pode ser necessário.",
+        "NFS": "Problemas com NFS podem ser causados por firewalls, permissões incorretas em `/etc/exports` no servidor, ou falha no serviço `nfs-server`. Use `showmount -e <servidor_nfs>` para testar a visibilidade dos exports."
     },
     "beegfs": {
-        "beegfs-client": " Se o cliente BeeGFS estiver inativo, verifique a conectividade com os servidores de metadados e armazenamento (`ping`, `netcat`). Verifique os logs do cliente em `/var/log/beegfs-client.log`.",
-        "unreachable": " Mensagens de 'unreachable' nos logs do BeeGFS indicam problemas de rede ou firewall entre o cliente e os servidores. Verifique as portas necessárias e a rota de rede."
+        "Uso de Disco BeeGFS": "Uma ou mais partições do BeeGFS estão com pouco espaço livre. Identifique os maiores consumidores de espaço e planeje uma limpeza ou arquivamento de dados antigos.",
+        "beegfs-storage": "O serviço de armazenamento do BeeGFS está inativo. Verifique os logs em `/var/log/beegfs-storage.log` e a conectividade com o serviço de metadados.",
+        "beegfs-meta": "O serviço de metadados do BeeGFS está inativo. Verifique os logs em `/var/log/beegfs-meta.log` e a conectividade com os outros daemons do BeeGFS."
+    },
+    "dmesg": {
+        "dmesg": "Foram encontrados erros nos logs do kernel. Essas mensagens geralmente indicam problemas de baixo nível com hardware ou drivers. Analise a saída completa para identificar o componente com falha.",
+        "ACPI Error": "Erros de ACPI podem estar relacionados a BIOS/UEFI desatualizado. Verifique se há atualizações de firmware para a placa-mãe.",
+        "mce: [Hardware Error]": "Machine Check Exception. O processador detectou um erro de hardware irrecuperável. Inspecione os logs para detalhes sobre a CPU ou memória afetada. Pode indicar hardware defeituoso."
     }
 }
