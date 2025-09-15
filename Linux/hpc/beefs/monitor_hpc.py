@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Monitora a saúde de um nó de cluster HPC, gerando relatórios em HTML e CSV.
 
-Versão: 3.0.3
+Versão: 3.0.4
 
 Este script é uma ferramenta de linha de comando projetada para ser executada em
 nós de computação ou de gerenciamento de um cluster de alta performance (HPC).
@@ -71,17 +71,22 @@ class Config:
     SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
     GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN = 85.0, 90.0
     BEEGFS_USAGE_THRESHOLD_WARN = 90.0
+
+    # <<< ALTERAÇÃO AQUI: 'nfs-server' REMOVIDO >>>
     COMMON_SERVICES: List[str] = [
-        'chronyd', 'nfs-server', 'cmdaemon', 'mysql', 'mariadb'
+        'chronyd', 'cmdaemon', 'mysql', 'mariadb'
     ]
+    # <<< ALTERAÇÃO AQUI: 'pacemaker', 'pcsd', 'corosync' REMOVIDOS >>>
     BCM_HEAD_NODE_SERVICES: List[str] = [
-        'dhcpd', 'named', 'cmd', 'corosync', 'pacemaker', 'pcsd'
+        'dhcpd', 'named', 'cmd'
     ]
     BCM_ACTIVE_MASTER_SERVICES: List[str] = [
         'grafana-server', 'influxdb', 'beegfs-mon'
     ]
+    
     INTERFACES_TO_IGNORE = ['lo', 'virbr']
     PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
+    
     SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
     OUTPUT_DIR = os.path.join(os.getcwd(), 'report')
     CSV_LOG_FILE, HTML_REPORT_FILE = (
@@ -531,11 +536,13 @@ class ServicesCheck(BaseCheck):
             if pacemaker_code == 0:
                 managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
                 d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
-                results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
+                results.append(self._build_result(
+                    STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
                 services_to_verify = [s for s in services_to_verify if s not in self.config.PACEMAKER_MANAGED_SERVICES]
         else:
             d = f"Nó detectado como {bcm_role}. Verificando serviços específicos para esta função."
-            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Detecção de Função BCM"))
+            results.append(self._build_result(
+                STATUS_NORMAL, PRIORITY_INFO, d, item="Detecção de Função BCM"))
             services_to_verify = list(self.config.COMMON_SERVICES) + list(self.config.BCM_HEAD_NODE_SERVICES)
             if bcm_role == "BCM Master Ativo":
                 services_to_verify.extend(self.config.BCM_ACTIVE_MASTER_SERVICES)
@@ -548,7 +555,8 @@ class ServicesCheck(BaseCheck):
                 s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
             else:
                 s, p = STATUS_FAIL, PRIORITY_CRITICAL
-                d = (f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:]))
+                d = (f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' +
+                     "\n".join(output.splitlines()[-5:]))
             results.append(self._build_result(s, p, d, item=item_name))
         return results
 
