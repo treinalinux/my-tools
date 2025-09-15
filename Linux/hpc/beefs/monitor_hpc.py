@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Monitora a saúde de um nó de cluster HPC, gerando relatórios em HTML e CSV.
 
+Versão: 3.0.3
+
 Este script é uma ferramenta de linha de comando projetada para ser executada em
 nós de computação ou de gerenciamento de um cluster de alta performance (HPC).
 Ele realiza uma série de verificações de hardware e software, classifica os
@@ -43,6 +45,7 @@ Estrutura de Arquivos Necessária:
 └── templates/
     └── report_template.html
 """
+
 import csv
 import datetime
 import json
@@ -178,21 +181,13 @@ class CPUCheck(BaseCheck):
         """Calcula o uso da CPU em um intervalo de 1 segundo."""
         t1 = self._get_cpu_times()
         if not t1:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat."
-            )]
+            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat.")]
         time.sleep(1)
         t2 = self._get_cpu_times()
         if not t2:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_CRITICAL,
-                "Não foi possível ler /proc/stat (2ª amostragem)."
-            )]
-
+            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, "Não foi possível ler /proc/stat (2ª amostragem).")]
         delta_total, delta_idle = t2[0] - t1[0], t2[1] - t1[1]
-        usage = 100.0 * (delta_total - delta_idle) / delta_total \
-            if delta_total > 0 else 0.0
-        
+        usage = 100.0 * (delta_total - delta_idle) / delta_total if delta_total > 0 else 0.0
         s, p, d = (
             (STATUS_WARN, PRIORITY_HIGH, f"Uso de {usage:.1f}% excede o limite.")
             if usage >= self.config.CPU_THRESHOLD_WARN else
@@ -220,7 +215,6 @@ class MemoryCheck(BaseCheck):
             mem_used = (mem_total - mem_info['MemFree'] - mem_info['Buffers'] -
                         mem_info['Cached'] - mem_info.get('SReclaimable', 0))
             mem_usage = (mem_used / mem_total) * 100.0 if mem_total > 0 else 0.0
-            
             s, p, d = (
                 (STATUS_WARN, PRIORITY_HIGH, f"Uso de {mem_usage:.1f}% excede o limite.")
                 if mem_usage >= self.config.MEM_THRESHOLD_WARN else
@@ -228,9 +222,7 @@ class MemoryCheck(BaseCheck):
             )
             return [self._build_result(s, p, d)]
         except (IOError, KeyError, ValueError) as e:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_CRITICAL, f"Não foi possível ler /proc/meminfo. Erro: {e}"
-            )]
+            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Não foi possível ler /proc/meminfo. Erro: {e}")]
 
 
 class LoadAverageCheck(BaseCheck):
@@ -245,14 +237,11 @@ class LoadAverageCheck(BaseCheck):
             with open('/proc/loadavg', 'r') as f:
                 load_1m_str, load_5m_str, load_15m_str = f.read().split()[:3]
             load_1m = float(load_1m_str)
-
             nproc_out, nproc_code = run_command("nproc")
             num_cores = int(nproc_out) if nproc_code == 0 and nproc_out.isdigit() else 1
-
             load_ratio = load_1m / num_cores
             d = (f"Carga (1m, 5m, 15m): {load_1m_str}, {load_5m_str}, "
                  f"{load_15m_str} ({num_cores} núcleos).")
-            
             s, p = (
                 (STATUS_WARN, PRIORITY_HIGH)
                 if load_ratio >= self.config.LOAD_AVERAGE_RATIO_WARN else
@@ -262,9 +251,7 @@ class LoadAverageCheck(BaseCheck):
                 d += f" Carga de 1 minuto ({load_1m}) é alta para os núcleos."
             return [self._build_result(s, p, d)]
         except (IOError, ValueError) as e:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível ler /proc/loadavg. Erro: {e}"
-            )]
+            return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Não foi possível ler /proc/loadavg. Erro: {e}")]
 
 
 class GPUCheck(BaseCheck):
@@ -278,16 +265,12 @@ class GPUCheck(BaseCheck):
         _, code = run_command("nvidia-smi -L")
         if code != 0:
             return []
-
         query = "index,name,temperature.gpu,utilization.gpu,memory.used,memory.total"
         output, code = run_command(
             f"nvidia-smi --query-gpu={query} --format=csv,noheader,nounits"
         )
         if code != 0:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_HIGH, f"Falha ao executar nvidia-smi. Saída: {output}"
-            )]
-
+            return [self._build_result(STATUS_FAIL, PRIORITY_HIGH, f"Falha ao executar nvidia-smi. Saída: {output}")]
         results = []
         for line in output.splitlines():
             try:
@@ -295,18 +278,15 @@ class GPUCheck(BaseCheck):
                     [p.strip() for p in line.split(',')]
                 temp, util, mem_used, mem_total = \
                     float(temp), float(util), float(mem_used), float(mem_total)
-                
                 mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
                 item_name = f'GPU {idx}: {name}'
                 status, warnings = STATUS_NORMAL, []
-                
                 if temp >= self.config.GPU_TEMP_THRESHOLD_WARN:
                     status = STATUS_WARN
                     warnings.append(f"Temp: {temp}°C (limite: {self.config.GPU_TEMP_THRESHOLD_WARN}°C)")
                 if util >= self.config.GPU_UTIL_THRESHOLD_WARN:
                     status = STATUS_WARN
                     warnings.append(f"Uso: {util}% (limite: {self.config.GPU_UTIL_THRESHOLD_WARN}%)")
-
                 p, d = (
                     (PRIORITY_HIGH, ", ".join(warnings)) if status == STATUS_WARN else
                     (PRIORITY_INFO, f"Temp: {temp}°C, Uso: {util}%, Memória: "
@@ -314,9 +294,7 @@ class GPUCheck(BaseCheck):
                 )
                 results.append(self._build_result(status, p, d, item=item_name))
             except (ValueError, IndexError):
-                results.append(self._build_result(
-                    STATUS_FAIL, PRIORITY_HIGH, f'Falha ao analisar linha: "{line}"'
-                ))
+                results.append(self._build_result(STATUS_FAIL, PRIORITY_HIGH, f'Falha ao analisar linha: "{line}"'))
         return results
 
 
@@ -348,13 +326,9 @@ class InfinibandCheck(BaseCheck):
         _, code = run_command("ibstat -V")
         if code != 0:
             return []
-
         ibstat_out, code = run_command("ibstat")
         if code != 0:
-            return [self._build_result(
-                STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {ibstat_out}"
-            )]
-
+            return [self._build_result(STATUS_FAIL, PRIORITY_CRITICAL, f"Falha ao executar 'ibstat'. Saída: {ibstat_out}")]
         results, local_ports, has_ib, has_active_ib = [], {}, False, False
         for block in ibstat_out.split('CA \'')[1:]:
             lines, ca_name = block.splitlines(), block.splitlines()[0].split('\'')[0]
@@ -368,7 +342,6 @@ class InfinibandCheck(BaseCheck):
                 elif ':' in line and cur_port:
                     key, val = line.split(':', 1)
                     ports[cur_port][key.strip()] = val.strip()
-
             for p_key, details in ports.items():
                 guid = details.get('Port GUID', 'N/A')
                 local_ports[guid] = {'ca': ca_name, 'port': p_key, 'details': details, 'conn': None}
@@ -376,7 +349,6 @@ class InfinibandCheck(BaseCheck):
                 state, p_state = details.get('State', 'N/A'), details.get('Physical state', 'N/A')
                 rate = details.get('Rate', 'N/A')
                 item = f"{ca_name} - {p_key}"
-
                 if layer == 'InfiniBand':
                     has_ib = True
                     if state == 'Active' and p_state == 'LinkUp':
@@ -388,20 +360,17 @@ class InfinibandCheck(BaseCheck):
                 elif layer == 'Ethernet' and (state != 'Active' or p_state != 'LinkUp'):
                     d = f"Interface Ethernet sobre IB inativa. Estado: {state}, Físico: {p_state}, Taxa: {rate}"
                     results.append(self._build_result(STATUS_WARN, PRIORITY_MEDIUM, d, item=item))
-
         if has_ib and not has_active_ib:
             d = "Foram detectadas placas InfiniBand, mas todas as portas estão inativas. Este pode ser o comportamento esperado para este nó."
             results.append(self._build_result(STATUS_WARN, PRIORITY_INFO, d))
             return results
         if not has_active_ib:
             return results
-
         iblink_out, code = run_command("iblinkinfo")
         if code != 0:
             results.append(self._build_result(
                 STATUS_WARN, PRIORITY_MEDIUM, "Não foi possível executar 'iblinkinfo' para verificar as conexões."))
             return results
-
         for line in iblink_out.splitlines():
             for guid, p_info in local_ports.items():
                 if guid in line and '==>' in line:
@@ -411,7 +380,6 @@ class InfinibandCheck(BaseCheck):
                             'lid': match.group(1), 'port': match.group(2), 'name': match.group(3).strip()
                         }
                     break
-        
         conn_details, all_connected = [], True
         for guid, p_info in local_ports.items():
             details = p_info['details']
@@ -420,7 +388,6 @@ class InfinibandCheck(BaseCheck):
                             details.get('Physical state') == 'LinkUp')
             if not is_active_ib:
                 continue
-
             if p_info['conn']:
                 lid, rate = details.get('Base lid', 'N/A'), details.get('Rate', 'N/A')
                 p_name, p_port = p_info['conn']['name'].split('"')[0].strip(), p_info['conn']['port']
@@ -432,12 +399,11 @@ class InfinibandCheck(BaseCheck):
                 item = f"{p_info['ca']} - {p_info['port']}"
                 results.append(self._build_result(
                     STATUS_FAIL, PRIORITY_CRITICAL, "Porta ativa mas sem conexão detectada (verificado com iblinkinfo).", item=item))
-
         if has_active_ib and all_connected and not any(r['status'] == STATUS_FAIL for r in results):
-            d = "Todas as portas InfiniBand estão ativas, sem erros e conectadas:<br>" + "<br>".join(conn_details)
+            details = "Todas as portas InfiniBand estão ativas, sem erros e conectadas:<br>" + "<br>".join(conn_details)
             if conn_details:
                 results.insert(0, self._build_result(
-                    STATUS_NORMAL, PRIORITY_INFO, d, item="Resumo da Conexão InfiniBand"))
+                    STATUS_NORMAL, PRIORITY_INFO, details, item="Resumo da Conexão InfiniBand"))
         return results
 
 
@@ -454,7 +420,6 @@ class NetworkErrorCheck(BaseCheck):
                 lines = f.readlines()[2:]
         except IOError:
             return [self._build_result(STATUS_FAIL, PRIORITY_MEDIUM, "Não foi possível ler /proc/net/dev.")]
-        
         results = []
         for line in lines:
             try:
@@ -471,7 +436,6 @@ class NetworkErrorCheck(BaseCheck):
                         STATUS_WARN, PRIORITY_MEDIUM, d, item=f'Interface {interface}'))
             except (ValueError, IndexError):
                 continue
-        
         if not results:
             results.append(self._build_result(
                 STATUS_NORMAL, PRIORITY_INFO, "Nenhum erro ou pacote descartado encontrado."))
@@ -492,28 +456,24 @@ class DiskHealthCheck(BaseCheck):
             return [self._build_result(
                 STATUS_FAIL, PRIORITY_MEDIUM, "A ferramenta 'smartctl' não foi encontrada.",
                 item="Ferramenta smartctl")]
-        
         results = []
         for disk_arg in self.disks_to_check:
             path, type_arg = disk_arg, ""
             if ':' in disk_arg:
                 path, type_ = disk_arg.split(':', 1)
                 type_arg = f"-d {type_}"
-            
             item = f"Disco {path}"
             out, _ = run_command(f"smartctl -H {type_arg} {path}")
             s, p, d = (
                 STATUS_FAIL, PRIORITY_HIGH,
                 f"Não foi possível determinar o estado S.M.A.R.T. Saída: {out}"
             )
-
             if "PASSED" in out:
                 s, p, d = STATUS_NORMAL, PRIORITY_INFO, "O teste de autoavaliação S.M.A.R.T. foi aprovado."
             elif "FAILED" in out:
                 s, p, d = STATUS_FAIL, PRIORITY_CRITICAL, "O teste S.M.A.R.T. FALHOU. Recomenda-se a substituição do disco."
             elif "Disabled" in out:
                 s, p, d = STATUS_WARN, PRIORITY_MEDIUM, "O suporte a S.M.A.R.T. está desativado."
-            
             if s == STATUS_NORMAL:
                 is_ssd, _ = run_command(f"cat /sys/block/{os.path.basename(path)}/queue/rotational")
                 if is_ssd.strip() == '0':
@@ -521,7 +481,6 @@ class DiskHealthCheck(BaseCheck):
                     if warnings:
                         s, p = STATUS_WARN, PRIORITY_HIGH
                         d += " " + " ".join(warnings)
-            
             results.append(self._build_result(s, p, d, item=item))
         return results
 
@@ -552,12 +511,9 @@ class ServicesCheck(BaseCheck):
 
     def execute(self) -> List[Dict[str, Any]]:
         """Verifica serviços, filtrando-os com base na função do nó."""
-        results = []
-        services_to_verify = []
-
+        results, services_to_verify = [], []
         bcm_role = "Nó Comum"
         output, code = run_command("cmha status")
-        
         is_bcm_head_node = code == 0 and output
         if is_bcm_head_node:
             first_line = output.splitlines()[0]
@@ -568,42 +524,31 @@ class ServicesCheck(BaseCheck):
             else:
                 bcm_role = "BCM Head Node (Estado Desconhecido)"
                 d = f"O serviço cmha está em um estado inesperado. Saída: {first_line}"
-                results.append(self._build_result(
-                    STATUS_WARN, PRIORITY_HIGH, d, item="Estado do CMHA"
-                ))
-
+                results.append(self._build_result(STATUS_WARN, PRIORITY_HIGH, d, item="Estado do CMHA"))
         if bcm_role == "Nó Comum":
             services_to_verify = list(self.config.COMMON_SERVICES)
             _, pacemaker_code = run_command("systemctl is-active pacemaker")
             if pacemaker_code == 0:
                 managed = ", ".join(self.config.PACEMAKER_MANAGED_SERVICES)
                 d = f"Pacemaker ativo. Serviços ({managed}) são gerenciados pelo cluster e ignorados aqui."
-                results.append(self._build_result(
-                    STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"
-                ))
+                results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Gerenciamento via Pacemaker"))
                 services_to_verify = [s for s in services_to_verify if s not in self.config.PACEMAKER_MANAGED_SERVICES]
         else:
             d = f"Nó detectado como {bcm_role}. Verificando serviços específicos para esta função."
-            results.append(self._build_result(
-                STATUS_NORMAL, PRIORITY_INFO, d, item="Detecção de Função BCM"
-            ))
-            services_to_verify = list(self.config.COMMON_SERVICES) + \
-                               list(self.config.BCM_HEAD_NODE_SERVICES)
+            results.append(self._build_result(STATUS_NORMAL, PRIORITY_INFO, d, item="Detecção de Função BCM"))
+            services_to_verify = list(self.config.COMMON_SERVICES) + list(self.config.BCM_HEAD_NODE_SERVICES)
             if bcm_role == "BCM Master Ativo":
                 services_to_verify.extend(self.config.BCM_ACTIVE_MASTER_SERVICES)
-
         for service in sorted(list(set(services_to_verify))):
             output, _ = run_command(f"systemctl status {service}")
             if "Loaded: not-found" in output or "could not be found" in output:
                 continue
-            
             item_name = f'Serviço: {service}'
             if "Active: active (running)" in output:
                 s, p, d = STATUS_NORMAL, PRIORITY_INFO, f'O serviço {service} está ativo.'
             else:
                 s, p = STATUS_FAIL, PRIORITY_CRITICAL
-                d = (f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' +
-                     "\n".join(output.splitlines()[-5:]))
+                d = (f'O serviço {service} está inativo ou em falha.\nDetalhes:\n' + "\n".join(output.splitlines()[-5:]))
             results.append(self._build_result(s, p, d, item=item_name))
         return results
 
@@ -618,7 +563,6 @@ class DmesgCheck(BaseCheck):
         """Usa grep para encontrar palavras-chave de erro no dmesg."""
         keys = '|'.join(self.config.HARDWARE_ERROR_KEYWORDS)
         out, code = run_command(f"dmesg | grep -iE '({keys})'")
-        
         if code == 0 and out:
             s, p, d = STATUS_WARN, PRIORITY_HIGH, f"Possíveis erros de hardware encontrados:\n{out}"
         elif "Operation not permitted" in out:
@@ -654,7 +598,6 @@ class BeeGFSDiskCheck(BaseCheck):
         beegfs_mounts = self._find_beegfs_mounts()
         if not beegfs_mounts:
             return []
-        
         results, total_size_kb, total_used_kb = [], 0, 0
         for mount in beegfs_mounts:
             output, code = run_command(f"df -k {mount}")
@@ -665,7 +608,6 @@ class BeeGFSDiskCheck(BaseCheck):
                 size, used, avail, percent = int(parts[1]), int(parts[2]), int(parts[3]), float(parts[4].replace('%', ''))
                 total_size_kb += size
                 total_used_kb += used
-                
                 status, priority = (
                     (STATUS_WARN, PRIORITY_HIGH) if percent >= self.config.BEEGFS_USAGE_THRESHOLD_WARN
                     else (STATUS_NORMAL, PRIORITY_INFO)
@@ -676,7 +618,6 @@ class BeeGFSDiskCheck(BaseCheck):
                     status, priority, details, item=f'Uso da Partição {mount}'))
             except (ValueError, IndexError):
                 continue
-        
         if total_size_kb > 0:
             agg_usage = (total_used_kb / total_size_kb) * 100.0
             agg_avail = total_size_kb - total_used_kb
@@ -691,9 +632,43 @@ class BeeGFSDiskCheck(BaseCheck):
         return results
 
 
+class UptimeCheck(BaseCheck):
+    """Verifica o tempo de atividade (uptime) do servidor."""
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.category = "Saúde do S.O."
+        self.item = "Tempo de Atividade (Uptime)"
+
+    def execute(self) -> List[Dict[str, Any]]:
+        """Verifica se o servidor foi reiniciado nas últimas 24 horas."""
+        output, code = run_command("uptime -s")
+        if code != 0:
+            return [self._build_result(
+                STATUS_FAIL, PRIORITY_MEDIUM,
+                f"Não foi possível obter o uptime. Saída: {output}"
+            )]
+        try:
+            boot_time = datetime.datetime.strptime(output, '%Y-%m-%d %H:%M:%S')
+            uptime_delta = datetime.datetime.now() - boot_time
+            uptime_str = str(uptime_delta).split(".")[0]
+            if uptime_delta.total_seconds() < 86400:  # 24 horas
+                status, priority = STATUS_WARN, PRIORITY_MEDIUM
+                details = f"O servidor foi reiniciado nas últimas 24 horas. Tempo ativo: {uptime_str}."
+            else:
+                status, priority = STATUS_NORMAL, PRIORITY_INFO
+                details = f"O servidor está ativo há mais de 24 horas. Tempo ativo: {uptime_str}."
+            return [self._build_result(status, priority, details)]
+        except ValueError:
+            return [self._build_result(
+                STATUS_FAIL, PRIORITY_MEDIUM,
+                f"Não foi possível analisar a data de boot: '{output}'"
+            )]
+
+
 class Monitor:
     """Orquestra todo o processo de monitoramento e geração de relatórios."""
     def __init__(self, args: Dict[str, Any]):
+        """Inicializa o monitor."""
         self.args, self.config = args, Config()
         self.knowledge_base = load_knowledge_base(self.config.KB_FILE)
         self.hostname, _ = run_command("hostname")
@@ -703,10 +678,14 @@ class Monitor:
     def _determine_scenario(self, hostname: str) -> str:
         """Determina o cenário com base no prefixo do hostname."""
         hostname_lower = hostname.lower()
-        if hostname_lower.startswith('an'): return 'ALAN'
-        elif hostname_lower.startswith('sv'): return 'SILVA'
-        elif hostname_lower.startswith('av'): return 'ALVES'
-        else: return 'Não Definido'
+        if hostname_lower.startswith('an'):
+            return 'ALAN'
+        elif hostname_lower.startswith('sv'):
+            return 'SILVA'
+        elif hostname_lower.startswith('av'):
+            return 'ALVES'
+        else:
+            return 'Não Definido'
 
     def run(self):
         """Executa o ciclo completo de verificação e geração de relatórios."""
@@ -715,15 +694,15 @@ class Monitor:
         if self.args['test_html']:
             self._generate_test_report()
             return
-        
         all_results = self._run_all_checks()
         self._log_to_csv(all_results)
         print(f"Resultados registrados em: {self.config.CSV_LOG_FILE}")
-        
         has_issues = any(c['status'] in [STATUS_WARN, STATUS_FAIL] for c in all_results)
         if has_issues or self.args['force_html']:
-            if has_issues: print("Problemas detectados. Gerando relatório HTML...")
-            else: print("Geração de relatório forçada. Gerando relatório HTML...")
+            if has_issues:
+                print("Problemas detectados. Gerando relatório HTML...")
+            else:
+                print("Geração de relatório forçada. Gerando relatório HTML...")
             self._generate_html_report(all_results, self.scenario)
         else:
             print("Nenhum problema detectado. O relatório HTML não será gerado.")
@@ -735,11 +714,10 @@ class Monitor:
             CPUCheck(self.config), MemoryCheck(self.config), LoadAverageCheck(self.config),
             GPUCheck(self.config), ServicesCheck(self.config), DmesgCheck(self.config),
             NetworkErrorCheck(self.config), InfinibandCheck(self.config),
-            BeeGFSDiskCheck(self.config)
+            BeeGFSDiskCheck(self.config), UptimeCheck(self.config)
         ]
         if self.args['smart_disks']:
             checks.append(DiskHealthCheck(self.config, self.args['smart_disks']))
-        
         results = []
         for check in checks:
             try:
@@ -780,48 +758,42 @@ class Monitor:
         except FileNotFoundError:
             print(f"ERRO: Template '{self.config.TEMPLATE_FILE}' não encontrado.")
             return
-
-        s_map = {STATUS_NORMAL: {'icon': '✅', 'color': '#28a745'},
-                 STATUS_WARN: {'icon': '⚠️', 'color': '#ffc107'},
-                 STATUS_FAIL: {'icon': '❌', 'color': '#dc3545'}}
-        p_map = {PRIORITY_CRITICAL: {'color': '#721c24', 'bg_color': '#f8d7da'},
-                 PRIORITY_HIGH: {'color': '#856404', 'bg_color': '#fff3cd'},
-                 PRIORITY_MEDIUM: {'color': '#004085', 'bg_color': '#cce5ff'},
-                 PRIORITY_INFO: {'color': '#155724', 'bg_color': '#d4edda'}}
-        
+        s_map = {
+            STATUS_NORMAL: {'icon': '✅', 'class': 'status-normal'},
+            STATUS_WARN:   {'icon': '⚠️', 'class': 'status-warn'},
+            STATUS_FAIL:   {'icon': '❌', 'class': 'status-fail'}
+        }
+        p_map = {
+            PRIORITY_CRITICAL: 'priority-critical', PRIORITY_HIGH: 'priority-high',
+            PRIORITY_MEDIUM: 'priority-medium', PRIORITY_INFO: 'priority-info'
+        }
         grouped, html = {}, ""
         for check in all_checks:
             grouped.setdefault(check['category'], []).append(check)
-        
         for cat, items in sorted(grouped.items()):
             html += f'<div class="category"><h2>{cat}</h2>'
             for item in sorted(items, key=lambda x: x['item']):
-                s_info = s_map.get(item['status'], {'icon': '?', 'color': '#6c757d'})
-                p, p_info = item.get('priority', PRIORITY_MEDIUM), p_map.get(item.get('priority', PRIORITY_MEDIUM))
-                p_tag = ''
-                if item['status'] != STATUS_NORMAL and p_info:
-                    p_tag = (f'<span class="priority-tag" style="--p-color: {p_info.get("color", "#6c757d")}; '
-                             f'--p-bg-color: {p_info.get("bg_color", "#e9ecef")};">{p}</span>')
+                s_info = s_map.get(item['status'], {'icon': '?', 'class': ''})
+                p, p_class = item.get('priority', PRIORITY_MEDIUM), p_map.get(item.get('priority', PRIORITY_MEDIUM), '')
+                p_tag = f'<span class="priority-tag {p_class}">{p}</span>' if item['status'] != STATUS_NORMAL else ''
                 sugg, sugg_html = get_kb_suggestion(item['details'], self.knowledge_base), ''
                 if sugg:
                     sugg_html = f'<div class="item-suggestion"><strong>Sugestão:</strong> {sugg}</div>'
-                
                 html += (
-                    f'<div class="item" style="border-left: 5px solid {s_info["color"]};">'
-                    f'<div class="item-status">{s_info["icon"]}</div>'
-                    f'<div class="item-content">'
-                    f'<div class="item-title">{item["item"]} - <span style="color: {s_info["color"]}; '
-                    f'margin-left: 4px;">{item["status"]}</span>{p_tag}</div>'
-                    f'<div class="item-details">{item["details"]}</div>{sugg_html}'
-                    f'</div></div>'
+                    f'<div class="item {s_info["class"]}">\n'
+                    f'  {p_tag}\n'
+                    f'  <div class="item-status">{s_info["icon"]}</div>\n'
+                    f'  <div class="item-content">\n'
+                    f'    <div class="item-title">{item["item"]} - <span>{item["status"]}</span></div>\n'
+                    f'    <div class="item-details">{item["details"]}</div>{sugg_html}\n'
+                    f'  </div>\n'
+                    f'</div>'
                 )
             html += '</div>'
-        
         final_html = template.replace('{hostname}', self.hostname)
         final_html = final_html.replace('{timestamp}', self.timestamp)
         final_html = final_html.replace('{content}', html)
         final_html = final_html.replace('{scenario}', scenario)
-        
         with open(self.config.HTML_REPORT_FILE, 'w', encoding='utf-8') as f:
             f.write(final_html)
         print(f"Relatório HTML gerado em: {self.config.HTML_REPORT_FILE}")
