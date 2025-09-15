@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Monitora a saúde de um nó de cluster HPC, gerando relatórios em HTML e CSV.
 
-Versão: 3.0.4
+Versão: 3.0.5
 
 Este script é uma ferramenta de linha de comando projetada para ser executada em
 nós de computação ou de gerenciamento de um cluster de alta performance (HPC).
@@ -71,22 +71,17 @@ class Config:
     SSD_PERCENTAGE_USED_THRESHOLD_WARN, SSD_TEMPERATURE_THRESHOLD_WARN = 85.0, 70
     GPU_TEMP_THRESHOLD_WARN, GPU_UTIL_THRESHOLD_WARN = 85.0, 90.0
     BEEGFS_USAGE_THRESHOLD_WARN = 90.0
-
-    # <<< ALTERAÇÃO AQUI: 'nfs-server' REMOVIDO >>>
     COMMON_SERVICES: List[str] = [
         'chronyd', 'cmdaemon', 'mysql', 'mariadb'
     ]
-    # <<< ALTERAÇÃO AQUI: 'pacemaker', 'pcsd', 'corosync' REMOVIDOS >>>
     BCM_HEAD_NODE_SERVICES: List[str] = [
         'dhcpd', 'named', 'cmd'
     ]
     BCM_ACTIVE_MASTER_SERVICES: List[str] = [
         'grafana-server', 'influxdb', 'beegfs-mon'
     ]
-    
     INTERFACES_TO_IGNORE = ['lo', 'virbr']
     PACEMAKER_MANAGED_SERVICES = ['beegfs-storage', 'beegfs-meta']
-    
     SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
     OUTPUT_DIR = os.path.join(os.getcwd(), 'report')
     CSV_LOG_FILE, HTML_REPORT_FILE = (
@@ -140,12 +135,20 @@ def load_knowledge_base(kb_file: str) -> Dict:
 
 
 def get_kb_suggestion(details: str, knowledge_base: Dict) -> Optional[str]:
-    """Busca uma sugestão na base de conhecimento com base nos detalhes."""
+    """Busca a melhor e mais específica sugestão na base de conhecimento."""
+    best_match_suggestion = None
+    longest_match_len = 0
+    details_lower = details.lower()
+
     for category in knowledge_base.values():
         for keyword, suggestion in category.items():
-            if keyword.lower() in details.lower():
-                return suggestion
-    return None
+            keyword_lower = keyword.lower()
+            if keyword_lower in details_lower:
+                if len(keyword_lower) > longest_match_len:
+                    longest_match_len = len(keyword_lower)
+                    best_match_suggestion = suggestion
+    
+    return best_match_suggestion
 
 
 class BaseCheck:
@@ -783,10 +786,12 @@ class Monitor:
             for item in sorted(items, key=lambda x: x['item']):
                 s_info = s_map.get(item['status'], {'icon': '?', 'class': ''})
                 p, p_class = item.get('priority', PRIORITY_MEDIUM), p_map.get(item.get('priority', PRIORITY_MEDIUM), '')
-                p_tag = f'<span class="priority-tag {p_class}">{p}</span>' if item['status'] != STATUS_NORMAL else ''
-                sugg, sugg_html = get_kb_suggestion(item['details'], self.knowledge_base), ''
-                if sugg:
-                    sugg_html = f'<div class="item-suggestion"><strong>Sugestão:</strong> {sugg}</div>'
+                p_tag, sugg_html = '', ''
+                if item['status'] != STATUS_NORMAL:
+                    p_tag = f'<span class="priority-tag {p_class}">{p}</span>'
+                    sugg = get_kb_suggestion(item['details'], self.knowledge_base)
+                    if sugg:
+                        sugg_html = f'<div class="item-suggestion"><strong>Sugestão:</strong> {sugg}</div>'
                 html += (
                     f'<div class="item {s_info["class"]}">\n'
                     f'  {p_tag}\n'
