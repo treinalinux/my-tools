@@ -5,130 +5,70 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Relatório de Status do HPC - {hostname}</title>
     <style>
-        /* --- GERAL --- */
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f4f7f9;
-            color: #333;
+        :root {
+            --primary: #0d47a1; --primary-light: #1976d2;
+            --bg: #f8f9fa; --card-bg: #ffffff; --border: #dee2e6;
+            --text: #212529; --text-muted: #6c757d;
+            --success: #198754; --warning: #ff9800; --danger: #d32f2f;
+            --success-bg: #d1e7dd; --warning-bg: #fff3e0; --danger-bg: #ffcdd2;
+            --gray-bg: #f1f5f9; --gray-text: #64748b;
         }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-        }
-
-        /* --- CABEÇALHO (HEADER) --- */
-        .header {
-            background-color: #004a7f;
-            color: #ffffff;
-            padding: 30px;
-            text-align: center;
-            border-radius: 8px 8px 0 0; /* Arredonda apenas os cantos superiores */
-        }
-        .header h1 {
-            margin: 0 0 10px 0;
-            font-size: 2em;
-            font-weight: 600;
-        }
-        .header .subtitle {
-            font-size: 1em;
-            opacity: 0.9; /* Deixa o subtítulo um pouco mais suave */
-            margin: 0;
-        }
-
-        /* --- CONTEÚDO DO RELATÓRIO --- */
-        .report-body {
-            padding: 20px 30px;
-        }
-        .category {
-            margin-bottom: 25px;
-        }
-        .category h2 {
-            font-size: 1.4em;
-            color: #34495e;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #ddd;
-            margin-bottom: 15px;
-        }
-        .item {
-            display: flex;
-            align-items: flex-start;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-radius: 6px;
-            background-color: #fdfdfd;
-            border: 1px solid #e9ecef;
-            transition: box-shadow 0.2s ease-in-out;
-        }
-        .item:hover {
-            box-shadow: 0 2px 5px rgba(0,0,0,0.08);
-        }
-        .item-status {
-            font-size: 1.8em;
-            margin-right: 15px;
-            padding-top: 2px;
-        }
-        .item-content {
-            flex-grow: 1;
-        }
-        .item-title {
-            font-weight: bold;
-            font-size: 1.1em;
-            display: flex;
-            align-items: center;
-            margin-bottom: 5px;
-        }
-        .item-details {
-            color: #555;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .item-suggestion {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: #fff3cd;
-            border-left: 4px solid #28a745;
-            font-size: 0.9em;
-            color: #155724;
-        }
+        body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 24px; background-color: var(--bg); color: var(--text); line-height: 1.6; }
+        .container { max-width: 1100px; margin: 0 auto; background-color: var(--card-bg); border-radius: 12px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.07); overflow: hidden; border: 1px solid var(--border); }
+        .header { background: linear-gradient(135deg, var(--primary), var(--primary-light)); color: #fff; padding: 32px 24px; text-align: center; }
+        .header h1 { margin: 0 0 12px 0; font-size: 2em; font-weight: 600; }
+        .header .subtitle { font-size: 1em; opacity: 0.9; margin: 4px 0 0; }
+        .report-body { padding: 24px 32px; }
+        .category { margin-bottom: 32px; }
+        .category:last-child { margin-bottom: 0; }
+        .category h2 { font-size: 1.25em; color: var(--primary); padding-bottom: 10px; border-bottom: 2px solid #e9ecef; margin-bottom: 20px; font-weight: 600; }
+        .item { position: relative; display: flex; align-items: flex-start; padding: 16px; margin-bottom: 12px; border-radius: 8px; border: 1px solid var(--border); }
+        .item.status-fail { background-color: var(--danger-bg); border-left: 5px solid var(--danger); }
+        .item.status-warn { background-color: var(--warning-bg); border-left: 5px solid var(--warning); }
+        .item.status-normal { background-color: #f8f9fa; border-left: 5px solid var(--success); }
+        .item-status { font-size: 1.6em; margin-right: 16px; padding-top: 1px; }
+        .item-content { flex-grow: 1; padding-right: 100px; }
+        .item-title { font-weight: 600; font-size: 1.05em; display: flex; align-items: center; margin-bottom: 8px; color: var(--text); }
+        .item-title span { font-weight: 700; margin-left: 8px; }
+        .status-fail .item-title span { color: var(--danger); }
+        .status-warn .item-title span { color: #e65100; }
+        .status-normal .item-title span { color: var(--success); }
+        .item-details { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 0.9em; }
+        .item-suggestion { margin-top: 12px; padding: 10px 14px; background-color: #e3f2fd; border-left: 4px solid var(--primary-light); font-size: 0.9em; color: #0d47a1; border-radius: 4px; }
+        
+        /* --- ESTILOS DAS TAGS DE PRIORIDADE (ATUALIZADOS) --- */
         .priority-tag {
+            position: absolute;
+            top: 16px;
+            right: 16px;
             font-size: 0.75em;
-            font-weight: bold;
-            padding: 3px 8px;
-            border-radius: 12px;
-            margin-left: auto;
-            color: var(--p-color);
-            background-color: var(--p-bg-color);
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 16px;
+            color: #fff;
+            letter-spacing: 0.5px;
         }
-
-        /* --- RODAPÉ (FOOTER) --- */
-        .footer {
-            padding: 20px;
-            border-top: 1px solid #e9ecef;
-            text-align: center;
-            font-size: 0.8em;
-            color: #888;
-        }
+        .priority-critical { background-color: #b71c1c; } /* P1 - Vermelho Escuro */
+        .priority-high     { background-color: #f57f17; } /* P2 - Laranja Escuro */
+        .priority-medium   { background-color: #1565c0; } /* P3 - Azul Sólido */
+        .priority-info     { background-color: #546e7a; } /* P4 - Cinza Azulado */
+        
+        .footer { padding: 20px; border-top: 1px solid var(--border); text-align: center; font-size: 0.8em; color: #aaa; background-color: #fdfdff; }
+        .footer strong { color: var(--text-muted); }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>Relatório de Status do Cluster HPC</h1>
+            <h1>📊 Relatório de Status do Cluster HPC</h1>
             <p class="subtitle">Servidor: {hostname} | Cenário: {scenario}</p>
             <p class="subtitle">Gerado em: {timestamp}</p>
         </div>
-
         <div class="report-body">
             {content}
         </div>
-
         <div class="footer">
-            <p>{scenario} - Relatório gerado automaticamente por monitor_hpc.</p>
+            <p>Cenário - {scenario} - Relatório gerado automaticamente por <strong>monitor_hpc.py</strong>.</p>
         </div>
     </div>
 </body>
