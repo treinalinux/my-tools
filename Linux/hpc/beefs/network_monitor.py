@@ -2,258 +2,297 @@
 # name.........: network_monitor
 # description..: Network Monitor
 # author.......: Alan da Silva Alves
-# version......: 1.0.0
+# version......: 2.0.0
 # date.........: 1/7/2026
 # github.......: github.com/treinalinux
 #
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-import os
 import sys
-import argparse
+import time
+import os
+
+# --- CORES E FORMATAÇÃO ---
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    CYAN = '\033[96m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
 
 
-def check_permissions():
-    if os.geteuid() != 0:
-        print("ERRO: Execute como root (sudo) para acessar diagnósticos de hardware.")
+# --- FUNÇÕES UTILITÁRIAS ---
+def get_arg_time():
+    """Lê o argumento --time da linha de comando."""
+    duration = 5 
+    if "--time" in sys.argv:
+        try:
+            idx = sys.argv.index("--time")
+            val = int(sys.argv[idx + 1])
+            if val > 0: duration = val
+        except (IndexError, ValueError):
+            pass
+    return duration
+
+
+def safe_popen(cmd):
+    try:
+        stream = os.popen(cmd)
+        output = stream.read()
+        stream.close()
+        return output
+    except:
+        return ""
+
+def check_requirements():
+    if not safe_popen("which ethtool").strip():
+        print(f"{Colors.RED}Erro: 'ethtool' não encontrado.{Colors.ENDC}")
         sys.exit(1)
 
+# --- IDENTIFICAÇÃO DE TOPOLOGIA ---
+def get_master_interface(iface):
+    """Retorna o nome da interface Master (bond/bridge) se existir."""
+    master_path = f"/sys/class/net/{iface}/master"
+    if os.path.exists(master_path):
+        try:
+            # O link geralmente aponta para ../../bond0, pegamos apenas o nome final
+            return os.path.basename(os.readlink(master_path))
+        except OSError:
+            return None
+    return None
 
-def get_detailed_hw_stats(interface_name):
-    """
-    Tenta usar o 'ethtool -S' para pegar contadores específicos de hardware.
-    Retorna um dicionário com os erros mais comuns.
-    """
-    stats = {
-        'crc_errors': 0,    # Problema físico/cabo/interferência
-        'missed_errors': 0, # Buffer cheio/CPU lenta
-        'frame_errors': 0,  # Cabo ou Duplex
-        'length_errors': 0, # MTU incorreto
-        'collisions': 0     # Duplex incorreto
-    }
-    
+
+def discover_interfaces():
+    """Retorna lista de interfaces UP, excluindo Bond Masters."""
+    target_ifaces = []
     try:
-        # Verifica se ethtool existe e roda
-        stream = os.popen(f"ethtool -S {interface_name} 2>/dev/null")
-        lines = stream.readlines()
-        stream.close()
+        all_ifaces = os.listdir('/sys/class/net')
+    except OSError:
+        print(f"{Colors.RED}Erro: Não foi possível ler /sys/class/net{Colors.ENDC}")
+        sys.exit(1)
 
-        for line in lines:
-            parts = line.strip().split(':')
-            if len(parts) != 2: continue
-            
-            key = parts[0].strip()
+    for iface in all_ifaces:
+        if iface == 'lo': continue
+        
+        # 1. Checar se está UP
+        try:
+            with open(f"/sys/class/net/{iface}/operstate", 'r') as f:
+                state = f.read().strip()
+            # Aceitamos 'up' ou 'unknown' (algumas virtuais ficam unknown)
+            if state == "down": continue
+        except: continue
+
+        # 2. Checar se é Bond Master (Devemos ignorar)
+        if os.path.exists(f"/sys/class/net/{iface}/bonding"):
+            continue 
+        
+        target_ifaces.append(iface)
+
+    return target_ifaces
+
+
+# --- COLETA DE DADOS ---
+def get_link_status(iface):
+    out = safe_popen(f"ethtool {iface} 2>/dev/null")
+    speed = "Desc."
+    duplex = "Desc."
+    for line in out.splitlines():
+        if "Speed:" in line: speed = line.split(":")[1].strip()
+        if "Duplex:" in line: duplex = line.split(":")[1].strip()
+    return speed, duplex
+
+
+def get_ring_buffer_info(iface):
+    out = safe_popen(f"ethtool -g {iface} 2>/dev/null")
+    max_rx = 0
+    curr_rx = 0
+    section = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if "Pre-set maximums" in line: section = "max"
+        if "Current hardware settings" in line: section = "curr"
+        if "RX:" in line and section:
             try:
-                value = int(parts[1].strip())
-            except:
-                continue
+                val = int(line.split(":")[1].strip())
+                if section == "max": max_rx = val
+                if section == "curr": curr_rx = val
+            except: pass
+    return curr_rx, max_rx
 
-            # Mapeamento de nomes variados de drivers para chaves padrão
-            if 'crc' in key: stats['crc_errors'] += value
-            if 'missed' in key or 'drop' in key or 'fifo' in key: stats['missed_errors'] += value
-            if 'frame' in key or 'align' in key: stats['frame_errors'] += value
-            if 'length' in key or 'over' in key: stats['length_errors'] += value
-            if 'collision' in key: stats['collisions'] += value
-            
-    except Exception:
-        # Se falhar (ex: ethtool não instalado ou interface virtual), retorna zerado
-        pass
 
+def get_cpu_softirq():
+    try:
+        with open("/proc/stat", "r") as f:
+            parts = f.readline().split()
+            softirq = int(parts[7])
+            total = sum(int(x) for x in parts[1:])
+            return total, softirq
+    except:
+        return 0, 0
+
+
+def get_kernel_stats(iface):
+    path = f"/sys/class/net/{iface}/statistics"
+    stats = {}
+    if not os.path.exists(path): return stats
+    try:
+        for f_name in ['rx_dropped', 'tx_dropped', 'rx_errors', 'tx_errors']:
+            with open(f"{path}/{f_name}", 'r') as f:
+                stats[f_name] = int(f.read())
+    except: pass
     return stats
 
 
-def get_interface_basic_stats(interface_name):
-    """Lê o básico do /proc/net/dev"""
-    try:
-        stream = os.popen(f"grep {interface_name}: /proc/net/dev")
-        line = stream.read()
-        stream.close()
-        
-        if not line: return None
-
-        data = line.split()
-        # Ajuste de índice pois o split remove espaços.
-        # Nome: (1)RX_bytes (2)packets (3)errs (4)drop ...
-        # Se o nome estiver colado "eth0:", o indice muda.
-        
-        # Tratamento robusto para parsing
-        raw_values = line.split(':')[1].split()
-        
-        return {
-            'rx_err': int(raw_values[2]),
-            'rx_drop': int(raw_values[3]),
-            'tx_err': int(raw_values[10]),
-            'tx_drop': int(raw_values[11])
-        }
-    except:
-        return None
-
-  
-def analyze_capture_output(output_lines):
-    """Analisa o texto do tcpdump em busca de pistas lógicas."""
-    findings = {
-        'bad_checksum': False,
-        'unreachable': False,
-        'tcp_reset': False,
-        'arp_storm': False
-    }
-    
-    arp_count = 0
-    for line in output_lines:
-        if "bad cksum" in line: findings['bad_checksum'] = True
-        if "unreachable" in line: findings['unreachable'] = True
-        if "Flags [R" in line: findings['tcp_reset'] = True
-        if "ARP," in line: arp_count += 1
-    
-    if arp_count > 10: findings['arp_storm'] = True
-    
-    return findings
+def get_ethtool_stats(iface):
+    safe_iface = iface.replace(';', '').replace('&', '')
+    out = safe_popen(f"ethtool -S {safe_iface} 2>/dev/null")
+    stats = {}
+    if not out: return stats
+    for line in out.splitlines():
+        if ":" in line and "Statistic" not in line:
+            parts = line.split(":", 1)
+            try: stats[parts[0].strip()] = int(parts[1].strip())
+            except: continue
+    return stats
 
 
-def diagnose_issues(interface_name, basic_delta, hw_stats_delta, capture_findings):
-    """
-    O CÉREBRO DO SCRIPT:
-    Cruza dados de contadores e tcpdump para gerar recomendações.
-    """
-    recommendations = []
+# --- ANÁLISE ---
+def analyze_results(iface, master, k_delta, e_delta, cpu_load):
+    found_issue = False
     
-    # 1. Análise de Interface Wireless (baseado no nome)
-    is_wireless = "wl" in interface_name
+    # Header formatado com a informação do MASTER
+    topo_info = ""
+    if master:
+        topo_info = f"{Colors.CYAN}(Parte de {Colors.BOLD}{master}{Colors.ENDC}{Colors.CYAN}){Colors.ENDC}"
+    else:
+        topo_info = "(Standalone)"
+
+    print(f"\n{Colors.HEADER}>>> RESULTADOS PARA: {Colors.BOLD}{iface}{Colors.ENDC} {topo_info}")
+
+    # 1. CPU
+    si_percent = 0
+    if cpu_load['total'] > 0:
+        si_percent = (cpu_load['si'] / cpu_load['total']) * 100
+
+    # 2. FÍSICO
+    phy_errs = 0
+    phy_keys = ['crc', 'fcs', 'symbol', 'align', 'carrier']
+    for k, v in e_delta.items():
+        if any(x in k.lower() for x in phy_keys) and v > 0:
+            print(f"   {Colors.RED}[FÍSICO] {k}: +{v}{Colors.ENDC}")
+            phy_errs += 1
+            found_issue = True
     
-    # 2. Análise de Erros Físicos (RX Errors)
-    if basic_delta['rx_err'] > 0:
-        msg = f"[CRÍTICO] Detectados {basic_delta['rx_err']} erros de recebimento (RX)."
+    if phy_errs > 0:
+        print(f"   {Colors.YELLOW}-> AÇÃO: Problema no cabo/porta física.{Colors.ENDC}")
+
+    # 3. NIC HARDWARE
+    nic_errs = 0
+    nic_keys = ['fifo', 'missed', 'overrun', 'no_buffer', 'discard', 'drop']
+    for k, v in e_delta.items():
+        is_phy = any(x in k.lower() for x in phy_keys)
+        if not is_phy and any(x in k.lower() for x in nic_keys) and v > 0:
+            print(f"   {Colors.RED}[HARDWARE NIC] {k}: +{v}{Colors.ENDC}")
+            nic_errs += 1
+            found_issue = True
+    
+    if nic_errs > 0:
+        curr, maximum = get_ring_buffer_info(iface)
+        print(f"   {Colors.YELLOW}-> AÇÃO: Aumentar Ring Buffer (ethtool -G).{Colors.ENDC}")
+        if curr and maximum:
+            print(f"      Atual: {curr} | Máx Suportado: {maximum}")
+
+    # 4. KERNEL
+    rx_drop = k_delta.get('rx_dropped', 0)
+    if rx_drop > 0:
+        found_issue = True
+        print(f"   {Colors.RED}[KERNEL] rx_dropped: +{rx_drop}{Colors.ENDC}")
         
-        if is_wireless:
-            recommendations.append(f"{msg} -> Em Wi-Fi, isso geralmente é interferência ou sinal ruim.")
-            recommendations.append("   AÇÃO: Verifique 'iwconfig'. Se o sinal for bom, desligue o Power Management (iwconfig wlan0 power off).")
-            recommendations.append("   AÇÃO: Mude o canal do roteador Wi-Fi.")
-        else:
-            # Rede Cabeada
-            if hw_stats_delta['crc_errors'] > 0:
-                recommendations.append(f"{msg} -> O contador CRC subiu. O pacote chegou corrompido.")
-                recommendations.append("   AÇÃO: TROQUE O CABO DE REDE imediatamente.")
-                recommendations.append("   AÇÃO: Verifique a porta do Switch e conectores RJ45 oxidados.")
-            elif hw_stats_delta['length_errors'] > 0:
-                recommendations.append(f"{msg} -> Erros de tamanho (Length/Over).")
-                recommendations.append("   AÇÃO: Verifique configurações de MTU (Jumbo Frames). O Switch e o Servidor devem ter o mesmo MTU.")
-            elif hw_stats_delta['frame_errors'] > 0:
-                 recommendations.append(f"{msg} -> Erros de Frame/Alinhamento.")
-                 recommendations.append("   AÇÃO: Verifique incompatibilidade de Duplex (Full/Half) entre Switch e Servidor.")
+        if nic_errs == 0 and phy_errs == 0:
+            if si_percent > 10.0:
+                 print(f"   {Colors.YELLOW}-> AÇÃO: Alta carga de CPU (SoftIRQ {si_percent:.1f}%).{Colors.ENDC}")
             else:
-                recommendations.append(f"{msg} -> Falha genérica de hardware.")
-                recommendations.append("   AÇÃO: Teste outro cabo e outra porta do switch.")
+                 print(f"   {Colors.YELLOW}-> AÇÃO: Aumentar netdev_max_backlog.{Colors.ENDC}")
 
-    # 3. Análise de Descartados (Drops)
-    if basic_delta['rx_drop'] > 0:
-        recommendations.append(f"[ALERTA] {basic_delta['rx_drop']} pacotes descartados (Dropped) pelo Kernel.")
-        recommendations.append("   DIAGNÓSTICO: O pacote chegou íntegro, mas o Linux o descartou.")
-        recommendations.append("   CAUSA 1: Firewall (iptables/nftables) bloqueando pacotes silenciosamente?")
-        recommendations.append("   CAUSA 2: Sobrecarga de CPU/Buffer. O servidor não conseguiu processar a tempo.")
-        recommendations.append("   AÇÃO: Verifique logs do sistema e consumo de CPU (top/htop).")
-
-    # 4. Análise Lógica (TCPDUMP)
-    if capture_findings['bad_checksum']:
-        recommendations.append("[REDE] 'Bad Checksum' detectado no tcpdump.")
-        recommendations.append("   NOTA: Se for em pacotes de SAÍDA (TX), é normal (Offload). Se for ENTRADA (RX), confirma problema de cabo/driver.")
-    
-    if capture_findings['tcp_reset']:
-        recommendations.append("[APLICAÇÃO] Muitos 'TCP Reset' detectados.")
-        recommendations.append("   DIAGNÓSTICO: Conexões estão sendo recusadas ativamente.")
-        recommendations.append("   AÇÃO: Verifique se o serviço/aplicação está rodando na porta correta ou se o Firewall está enviando REJECT.")
-
-    if not recommendations and (basic_delta['rx_err'] + basic_delta['tx_err']) == 0:
-        recommendations.append("[OK] A interface parece saudável. Nenhum erro físico ou lógico grave detectado neste período.")
-
-    return recommendations
+    if not found_issue:
+        # Mensagem de sucesso personalizada conforme pedido
+        if master:
+            print(f"   {Colors.GREEN}[OK] A placa {iface} parte da interface {master} foi verificada e está saudável.{Colors.ENDC}")
+        else:
+            print(f"   {Colors.GREEN}[OK] Interface {iface} verificada e está saudável.{Colors.ENDC}")
 
 
-def run_diagnostic_cycle(interface_name, duration):
-    print(f"\n{'='*80}")
-    print(f" INICIANDO DIAGNÓSTICO AVANÇADO: {interface_name}")
-    print(f" Duração do teste: {duration} segundos")
-    print(f"{'='*80}")
-
-    # --- FASE 1: Leitura Inicial ---
-    print("-> Coletando estatísticas iniciais...")
-    start_basic = get_interface_basic_stats(interface_name)
-    start_hw = get_detailed_hw_stats(interface_name)
-    
-    if not start_basic:
-        print("Erro: Interface não encontrada ou inativa.")
-        return
-
-    # --- FASE 2: Captura (TCPDUMP) ---
-    print("-> Analisando tráfego em tempo real (Aguarde)...")
-    # Captura silenciosa para análise interna, sem encher a tela
-    cmd = f"timeout {duration} tcpdump -i {interface_name} -nn -v 2>&1"
-    stream = os.popen(cmd)
-    capture_lines = stream.readlines()
-    stream.close()
-    
-    capture_analysis = analyze_capture_output(capture_lines)
-
-    # --- FASE 3: Leitura Final e Deltas ---
-    end_basic = get_interface_basic_stats(interface_name)
-    end_hw = get_detailed_hw_stats(interface_name)
-
-    # Calculando diferenças (O que aconteceu AGORA)
-    delta_basic = {k: end_basic[k] - start_basic[k] for k in start_basic}
-    delta_hw = {k: end_hw[k] - start_hw[k] for k in start_hw}
-
-    # --- FASE 4: O Veredito ---
-    print(f"\n{' RESULTADOS DO TESTE ':=^80}")
-    
-    # Exibir Contadores Relevantes
-    total_errs = delta_basic['rx_err'] + delta_basic['tx_err']
-    print(f"Erros Físicos Totais (RX+TX): {total_errs}")
-    print(f"Pacotes Descartados (Drops):  {delta_basic['rx_drop']}")
-    
-    if total_errs > 0:
-        print(f"\n--- Detalhes de Hardware (Ethtool) ---")
-        for k, v in delta_hw.items():
-            if v > 0: print(f" > {k}: +{v}")
-
-    print(f"\n--- Recomendações do Sistema ---")
-    recommendations = diagnose_issues(interface_name, delta_basic, delta_hw, capture_analysis)
-    
-    for rec in recommendations:
-        print(rec)
-    
-    print(f"{'='*80}\n")
-
-
+# --- MAIN ---
 def main():
-    check_permissions()
-    parser = argparse.ArgumentParser(description="Network Doctor (RHEL8) - Diagnóstico e Recomendações")
-    parser.add_argument('interfaces', nargs='*', help='Interfaces para diagnosticar')
-    parser.add_argument('-t', '--time', type=int, default=30, help='Tempo de análise (padrão: 30s)')
-    args = parser.parse_args()
-
-    targets = args.interfaces
+    check_requirements()
+    duration = get_arg_time()
     
-    # Se não informar interface, busca automática
-    if not targets:
-        print("Modo Automático: Buscando interfaces com erros históricos...")
-        # Lógica simplificada para pegar lista
-        stream = os.popen('cat /proc/net/dev')
-        lines = stream.readlines()[2:]
-        stream.close()
-        targets = []
-        for line in lines:
-            data = line.split()
-            if not data: continue
-            # Soma erros RX+TX e Drops
-            errs = int(data[2]) + int(data[3]) + int(data[10]) + int(data[11])
-            if errs > 0:
-                targets.append(data[0].strip(':'))
-        
-        if not targets:
-            print("Nenhuma interface com erros históricos encontrada. Use: sudo ./script.py <interface> para forçar.")
-            return
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    
+    if args:
+        ifaces_to_monitor = args
+        print(f"{Colors.BLUE}Modo Manual: Monitorando {len(ifaces_to_monitor)} interface(s)...{Colors.ENDC}")
+    else:
+        ifaces_to_monitor = discover_interfaces()
+        print(f"{Colors.BLUE}Modo Automático: {len(ifaces_to_monitor)} interfaces físicas encontradas.{Colors.ENDC}")
+    
+    if not ifaces_to_monitor:
+        print(f"{Colors.RED}Nenhuma interface elegível encontrada.{Colors.ENDC}")
+        sys.exit(0)
 
-    for iface in targets:
-        run_diagnostic_cycle(iface, args.time)
+    # Dicionário para guardar o mapeamento de interface -> master
+    iface_map = {}
+    
+    print(f"Iniciando coleta ({duration}s)...")
+    
+    # 1. Coleta Inicial
+    start_data = {}
+    for iface in ifaces_to_monitor:
+        master = get_master_interface(iface)
+        iface_map[iface] = master # Salva para usar no print final
+        
+        speed, duplex = get_link_status(iface)
+        
+        # Print formatado na inicialização
+        if master:
+            print(f" - {iface} (Parte de {master}): {speed} / {duplex}")
+        else:
+            print(f" - {iface}: {speed} / {duplex}")
+            
+        start_data[iface] = {
+            'k': get_kernel_stats(iface),
+            'e': get_ethtool_stats(iface)
+        }
+    
+    cpu_tot_s, cpu_si_s = get_cpu_softirq()
+
+    # 2. Aguarda
+    try:
+        time.sleep(duration)
+    except KeyboardInterrupt:
+        print("\nCancelado.")
+        sys.exit(0)
+
+    # 3. Coleta Final e Análise
+    cpu_tot_e, cpu_si_e = get_cpu_softirq()
+    cpu_load = {'total': cpu_tot_e - cpu_tot_s, 'si': cpu_si_e - cpu_si_s}
+
+    for iface in ifaces_to_monitor:
+        k_end = get_kernel_stats(iface)
+        e_end = get_ethtool_stats(iface)
+        
+        k_start = start_data[iface]['k']
+        e_start = start_data[iface]['e']
+        
+        k_delta = {k: k_end.get(k, 0) - k_start.get(k, 0) for k in k_start}
+        e_delta = {k: v - e_start.get(k, 0) for k, v in e_end.items() if (v - e_start.get(k, 0)) > 0}
+        
+        # Passamos o master map para a análise
+        analyze_results(iface, iface_map[iface], k_delta, e_delta, cpu_load)
+
 
 if __name__ == "__main__":
     main()
