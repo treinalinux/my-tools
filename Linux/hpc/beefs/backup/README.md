@@ -8,6 +8,38 @@ vim /opt/beegfs_backup/backup_config.json
 
 ```
 
+Arquivo de exemplo "/opt/beegfs_backup/backup_config.json":
+
+```bash
+
+{
+    "backup_destination": "/mnt/backups/beegfs_configs",
+    "retention_days": 15,
+    "tiers": {
+        "management": [
+            "/etc/beegfs",
+            "/opt/beegfs_backup/backup_config.json",
+            "/etc/openldap/ldap.conf",
+            "/etc/sssd/sssd.conf",
+            "/root/.bashrc"
+        ],
+        "metadata": [
+            "/etc/beegfs",
+            "/etc/corosync/corosync.conf",
+            "/etc/fstab"
+        ],
+        "storage": [
+            "/etc/beegfs",
+            "/etc/corosync/corosync.conf",
+            "/etc/multipath.conf",
+            "/etc/iscsi/initiatorname.iscsi",
+            "/etc/fstab"
+        ]
+    }
+}
+```
+
+
 Escolha o qual perfil do nó realizar backup "management", "metadata", "storage", "all". Exemplo:
 
 ```bash
