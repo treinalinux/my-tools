@@ -189,7 +189,8 @@ A tabela abaixo detalha as diferenças operacionais de cada abordagem:
 * Use o Pacemaker se você já possui uma infraestrutura de storage compartilhado de alta resiliência e precisa apenas garantir que o serviço do BeeGFS continue rodando caso o servidor que gerencia o volume pare de responder.
 
 Para cenários críticos de missão contínua, arquitetos de HPC costumam combinar ambos. O Pacemaker gerencia a inicialização e os IPs flutuantes dos serviços, enquanto o Buddy Mirror cuida da integridade dos dados subjacentes.
-Se você estiver planejando o design do seu cluster, me informe:
+
+Se você estiver planejando o design do seu cluster, pense nas perguntas:
 
 * Qual é o tipo de armazenamento físico disponível (Discos locais ou Storage compartilhado)?
 * Qual é o foco principal do projeto (Evitar perda de dados ou maximizar o tempo de atividade dos serviços)?
