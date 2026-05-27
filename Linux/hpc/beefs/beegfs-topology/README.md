@@ -1,15 +1,20 @@
 ## BEEGFS INFRASTRUCTURE AUDITOR (beegfs-topology.py)
 
-O **BEEGFS INFRASTRUCTURE AUDITOR** (**beegfs-topology.py**) deve ser executado no **servidor management (servidor que roda o beegfs-mgmtd)** infraestrutura do BeeGFS desconhecida, com isso após ser executado irá fornecer os da infraestrutura do BeeGFS, acredito que vai reduzir o tempo de checagens.
-No futuro certamente farei melhorias no **beegfs-topology.py**, até porque criei e rodei em um laboratório, mas não criei ele para o laboratório e sim, fiz a criação o tentando deixar mais genérico possível.
+O **BEEGFS INFRASTRUCTURE AUDITOR** (**beegfs-topology.py**) deve ser executado no servidor de gerenciamento (nó que executa o beegfs-mgmtd) de uma infraestrutura BeeGFS desconhecida. Após a execução, ele fornecerá o mapeamento completo do ambiente, reduzindo significativamente o tempo necessário para as checagens manuais.
+
+No futuro, pretendo implementar melhorias no **beegfs-topology.py**. O script foi validado com sucesso em dois laboratórios distintos *(BeeGFS Buddy Mirror e BeeGFS com Pacemaker)*, pois foi desenvolvido para ser o mais genérico e adaptável possível, sem amarras a um cenário específico.
 
 ## Checar uma infraestrutura do BeeGFS desconhecida
 
-Para checar uma infraestrutura do BeeGFS que você acaba de conhecer, é necessário que o **beegfs-topology.py** seja levado para o **servidor management (servidor que roda o beegfs-mgmtd)** e que tenha realizado a distribuição da chave ssh entre os servidores.
+Pré-requisitos para analisar uma infraestrutura BeeGFS desconhecida:
+
+   1. Copiar o beegfs-topology.py para o servidor de gerenciamento (onde roda o beegfs-mgmtd).
+   2. Garantir que a autenticação via chave SSH já esteja configurada entre todos os servidores.
+
 
 ### Checando uma infraestrutura do BeeGFS (Buddy Mirror)
 
-Checando uma infraestrutura do BeeGFS que está configurada com alta disponibilidade usando Buddy Mirror, e os servidores de meta e storage estão com discos locais.
+Análise da infraestrutura BeeGFS em alta disponibilidade via Buddy Mirroring. Nessa configuração, os nós de metadados (meta) e de armazenamento (storage) utilizam discos locais.
 
 ```bash
 
@@ -86,7 +91,7 @@ Você pode gerenciar essas configurações através da linha de comando usando f
 
 ### Checando uma infraestrutura do BeeGFS (Pacemaker)
 
-Checando uma infraestrutura do BeeGFS que está configurada com alta disponibilidade usando Pacemaker, e os servidores de meta e storage estão discos de uma servidor remoto iscsi.
+Análise de infraestrutura BeeGFS em alta disponibilidade via Pacemaker. Para simular um storage físico compartilhado, os servidores de metadados (meta) e de armazenamento (storage) utilizam discos provisionados por um servidor iSCSI remoto.
 
 
 ```bash
