@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # name.........: Topologia BeeGFS
-# description..: Ferramenta que checa a topologia usada na criação do centário.
+# description..: Ferramenta que checa a topologia usada na criação do cenário.
 # author.......: Alan da Silva Alves
 # version......: 0.0.1
 # date.........: 5/26/2026
