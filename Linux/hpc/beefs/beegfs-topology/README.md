@@ -1,6 +1,6 @@
 ## BEEGFS INFRASTRUCTURE AUDITOR (beegfs-topology.py)
 
-O **BEEGFS INFRASTRUCTURE AUDITOR** (**beegfs-topology.py**) deve ser executado no o **servidor management (servidor que roda o beegfs-mgmtd)** infraestrutura do BeeGFS desconhecida, com isso após ser executado irá fornecer os da infraestrutura do BeeGFS, acredito que vai reduzir o tempo de checagens.
+O **BEEGFS INFRASTRUCTURE AUDITOR** (**beegfs-topology.py**) deve ser executado no **servidor management (servidor que roda o beegfs-mgmtd)** infraestrutura do BeeGFS desconhecida, com isso após ser executado irá fornecer os da infraestrutura do BeeGFS, acredito que vai reduzir o tempo de checagens.
 No futuro certamente farei melhorias no **beegfs-topology.py**, até porque criei e rodei em um laboratório, mas não criei ele para o laboratório e sim, fiz a criação o tentando deixar mais genérico possível.
 
 ## Checar uma infraestrutura do BeeGFS desconhecida
